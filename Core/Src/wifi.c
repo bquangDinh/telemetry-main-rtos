@@ -52,8 +52,6 @@ static bool wifi_handle_error();
 
 static bool wifi_send_cmd_and_wait_respond(const char *fmt, const uint16_t timeout, ...);
 
-static bool wifi_transmit_data(const void* data, size_t bytes);
-
 void WIFI_Task_Init(UART_HandleTypeDef *esp32_uart_interface) {
 	esp32_uart_driver_state.huart = esp32_uart_interface;
 
@@ -86,9 +84,6 @@ static void WIFI_Task(void *argument) {
 
 	esp32_uart_driver_state.controller_rx_sem = wifi_rx_sem;
 
-	//  Init DMA transfer from memory to peripheral
-	// So I can see the respond from ESP32
-	// DMA is better than interrupt-based approach as it does not need to wake up CPU for every bytes
 	UART_Task_Init(&esp32_uart_driver_state);
 
 	uart_logger_add_msg("[ESP32] Initialized esp32 uart driver\r\n", 0);

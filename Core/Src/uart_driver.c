@@ -33,9 +33,6 @@ void UART_Task_Init(uart_driver_state_t *init_state) {
 	init_state->rx_ready = false;
 	init_state->dma_old_pos = 0;
 
-	// Check if uart_rx_sem has been created before
-	// if it is created before, then IT IS WRONG
-	// it should be created in here
 	if (init_state->uart_rx_sem == NULL) {
 		init_state->uart_rx_sem = osSemaphoreNew(1, 0, NULL);
 
