@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define USR_LED_1_Pin GPIO_PIN_2
+#define USR_LED_1_GPIO_Port GPIOE
 #define NOTE_CARD_ATTN_Pin GPIO_PIN_5
 #define NOTE_CARD_ATTN_GPIO_Port GPIOE
 #define NOTE_CARD_ATTN_EXTI_IRQn EXTI9_5_IRQn
@@ -66,6 +68,8 @@ void Error_Handler(void);
 #define CAN_TX_LED_GPIO_Port GPIOB
 #define CAN_RX_LED_Pin GPIO_PIN_2
 #define CAN_RX_LED_GPIO_Port GPIOB
+#define USR_LED_2_Pin GPIO_PIN_5
+#define USR_LED_2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

@@ -180,7 +180,7 @@ static void CAN_Task(void *argument) {
 
 	uint32_t can_baud_rate = get_can_baud_rate(can_state->can);
 
-	sprintf(msg, "[CAN] Can baud rate: %lu\r\n", can_baud_rate);
+	sprintf(msg, "[CAN] Can baud rate: %lu bytes / second\r\n", can_baud_rate);
 
 	uart_logger_add_msg(msg, 0);
 

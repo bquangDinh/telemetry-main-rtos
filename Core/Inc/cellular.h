@@ -8,6 +8,7 @@
 #ifndef INC_CELLULAR_H_
 #define INC_CELLULAR_H_
 
+#include <stdbool.h>
 #include "stm32h7xx_hal.h"
 
 /* BLUES NOTE CARD UART Configs */
@@ -28,7 +29,14 @@
 #define CELLULAR_BLUES_ATTN_GPIO_PIN GPIO_PIN_5
 #define CELLULAR_BLUES_ATTN_GPIO_PORT GPIOE
 
+#define CELLULAR_MAX_DATA_LEN 64
+#define CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY 20
+
 void CELLULAR_Task_Init(UART_HandleTypeDef* blues_uart_interface);
+
+bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t* data, uint16_t len);
+
+bool CELLULAR_transmit_data(const uint32_t id, const uint8_t* data, size_t len, uint16_t timeout);
 
 void CELLULAR_blues_uart_rx_callback(size_t len);
 

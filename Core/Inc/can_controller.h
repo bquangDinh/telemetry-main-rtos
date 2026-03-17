@@ -22,6 +22,8 @@
 #define CAN_CONTROLLER_ERROR_LED_PORT GPIOA
 #define CAN_CONTROLLER_ERROR_LED_PIN GPIO_PIN_4
 
+#define CAN_CONTROLLER_QUEUE_MAX_CAPACITY 20
+
 void CAN_CONTROLLER_Task_Init(FDCAN_HandleTypeDef* can);
 
 void CAN_CONTROLLER_send_message(const uint8_t* payload, size_t len, uint16_t timeout);

@@ -140,7 +140,7 @@ static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t
 	for (size_t i = 0; i < len; ++i) {
 		ch = data[i];
 
-		if (uart_state->rx_line_len < UART_DMA_BUFFER_SIZE - 1) {
+		if (uart_state->rx_line_len < RX_LINE_MAX_LEN) {
 			uart_state->rx_line_buf[uart_state->rx_line_len++] =
 					ch;
 		}
@@ -160,9 +160,7 @@ static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t
 static void uart_handle_line(uart_driver_state_t* uart_state, const uint8_t *line, size_t len) {
 	uart_logger_add_msg((char*) line, len);
 
-	if (uart_state->controller_rx_sem != NULL) {
-		// Signaling the task that controls this driver that esp32 has received a respond
-		// In the case of wifi module, it signals that the Wifi module can continue sending commands
-		osSemaphoreRelease(uart_state->controller_rx_sem);
+	if (uart_state->rx_line_callback != NULL) {
+		uart_state->rx_line_callback(line, len);
 	}
 }

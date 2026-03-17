@@ -11,6 +11,9 @@
 #include "can_driver.h"
 #include "uart_logger.h"
 
+#include "wifi.h"
+#include "cellular.h"
+
 static void CAN_CONTROLLER_Task(void *argument);
 
 static osThreadId_t canControllerTaskHandler;
@@ -103,11 +106,22 @@ static void CAN_CONTROLLER_Task(void *argument) {
 						can_driver_state.rx_len);
 
 				uart_logger_add_msg(msg, 0);
+
+				// Sending message to Cellular and Wifi
+				if (CELLULAR_add_payload_to_queue(can_driver_state.rx_can_id, can_driver_state.rx_buf, can_driver_state.rx_len)) {
+					uart_logger_add_msg("[CAN CONTROLLER] Added payload to cellular queue\r\n", 0);
+				}
+
+				if (WIFI_add_payload_to_queue((uint8_t*)msg, 256)) {
+					uart_logger_add_msg("[CAN CONTROLLER] Added payload to wifi queue\r\n", 0);
+				}
 			}
 
 			// Turn off RX LED
 			HAL_GPIO_WritePin(CAN_CONTROLLER_RX_LED_PORT, CAN_CONTROLLER_RX_LED_PIN, GPIO_PIN_RESET);
 		}
+
+		osDelay(1000);
 	}
 }
 

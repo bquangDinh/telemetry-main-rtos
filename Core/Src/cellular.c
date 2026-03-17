@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "cellular.h"
 #include "cmsis_os.h"
@@ -20,8 +21,24 @@ typedef enum {
 	CELLULAR_STATE_READY,
 	CELLULAR_STATE_CONFIGURED,
 	CELLULAR_STATE_HUB_CONNECTED,
+	CELLULAR_STATE_READY_TO_TRANSMIT,
 	CELLULAR_STATE_ERROR
 } CellularState_t;
+
+typedef struct {
+	uint32_t id;
+	uint8_t payload[CELLULAR_MAX_DATA_LEN];
+	uint8_t len;
+} cellular_payload_t;
+
+typedef struct {
+	cellular_payload_t buffer[CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY];
+	uint16_t tail;
+	uint16_t head;
+	uint16_t count;
+	osMutexId_t mutex;
+	osSemaphoreId_t items;
+} cellular_queue_t;
 
 /* List of Commands */
 #define CELLULAR_SET_HUB_CONNECTED_INTERRUPT "{\"req\":\"card.attn\",\"mode\":\"arm,connected\"}\r\n"
@@ -72,19 +89,30 @@ static bool cellular_hub_connected = false;
 
 static bool acquired_hub_connection_status = false;
 
+static cellular_queue_t cellular_payload_queue;
+
+static void uart_rx_line_callback_handler(const uint8_t *data, size_t len);
+
 static bool cellular_handle_reset();
 static bool cellular_handle_wait_ready();
 static bool cellular_handle_ready();
 static bool cellular_handle_hub_connected();
+static bool cellular_handle_transmit();
 static bool cellular_handle_error();
 
 static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 		const uint16_t timeout, ...);
 
-static bool cellular_transmit_data(const void *data, size_t bytes);
+static bool cellular_payload_pop(cellular_payload_t *out);
 
 void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 	blues_uart_driver_state.huart = blues_uart_interface;
+	blues_uart_driver_state.rx_line_callback = uart_rx_line_callback_handler;
+
+	cellular_payload_queue.mutex = osMutexNew(NULL);
+	cellular_payload_queue.items = osSemaphoreNew(
+			CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
+	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
 
 	cellularTaskHandler = osThreadNew(CELLULAR_Task, NULL, &cellularTaskAttr);
 }
@@ -106,17 +134,132 @@ void CELLULAR_ATTN_callback() {
 	}
 }
 
+bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t *data,
+		uint16_t len) {
+	if (id == 0 || data == NULL || len == 0)
+		return false;
+
+	osMutexAcquire(cellular_payload_queue.mutex, osWaitForever);
+
+	if (cellular_payload_queue.count >= CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY) {
+		osMutexRelease(cellular_payload_queue.mutex);
+
+		return false;
+	}
+
+	cellular_payload_t *slot =
+			&cellular_payload_queue.buffer[cellular_payload_queue.head];
+
+	if (len >= CELLULAR_MAX_DATA_LEN) {
+		len = CELLULAR_MAX_DATA_LEN - 1;
+	}
+
+	slot->len = len;
+
+	memset(slot->payload, 0, CELLULAR_MAX_DATA_LEN);
+
+	memcpy(slot->payload, data, len);
+
+	cellular_payload_queue.head = (cellular_payload_queue.head + 1)
+			% CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY;
+
+	cellular_payload_queue.count++;
+
+	osMutexRelease(cellular_payload_queue.mutex);
+
+	// Signal that there is item to consume
+	osSemaphoreRelease(cellular_payload_queue.items);
+
+	return true;
+}
+
+bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
+		uint16_t timeout) {
+	if (cellular_state != CELLULAR_STATE_READY_TO_TRANSMIT) {
+		uart_logger_add_msg("[Cellular] Not ready to transmit!\r\n", 0);
+		return false;
+	}
+
+	if (len > CELLULAR_MAX_DATA_LEN) {
+		uart_logger_add_msg(
+				"[Cellular] Failed to send data, maximum data length is 64 bytes\r\n",
+				0);
+		return false;
+	}
+
+	static char buffer[1024];
+	int offset = 0;
+
+	memset(buffer, 0, 1024);
+
+	// Start JSON
+	offset +=
+			snprintf(&buffer[offset], sizeof(buffer) - offset,
+					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"sync\":true,\"body\":{");
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		uart_logger_add_msg(
+				"[Cellular] Failed to build Note JSON: Buffer overflow at JSON start\r\n",
+				0);
+		return false;
+	}
+
+	// Build JSON body
+	// Add id
+	offset += snprintf(&buffer[offset], sizeof(buffer) - offset, "\"id\":%lu,",
+			(unsigned long) id);
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		uart_logger_add_msg(
+				"[Cellular] Failed to build Note JSON: Buffer overflow at JSON start\r\n",
+				0);
+		return false;
+	}
+
+	// Add payload as hex string
+	offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
+			"\"payload\":\"");
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		uart_logger_add_msg(
+				"[Cellular] Failed to build Note JSON: Buffer overflow at payload start\r\n",
+				0);
+		return false;
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		offset += snprintf(&buffer[offset], sizeof(buffer) - offset, "%02X ",
+				data[i]);
+
+		if (offset < 0 || offset >= (int) sizeof(buffer)) {
+			uart_logger_add_msg(
+					"[Cellular] Failed to build Note JSON: Buffer overflow while writing payload\r\n",
+					0);
+			return false;
+		}
+	}
+
+	offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
+			"\",\"len\":%lu}}\n", (unsigned long) len);
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		uart_logger_add_msg(
+				"[Cellular] Failed to build Note JSON: Buffer overflow while writing payload\r\n",
+				0);
+		return false;
+	}
+
+	uart_logger_add_msg(buffer, 0);
+
+	return cellular_send_cmd_and_wait_respond(buffer, timeout);
+}
+
 static void CELLULAR_Task(void *argument) {
 	uart_logger_add_msg(
 			"[Blues] Initializing blues note card uart driver...\r\n", 0);
 
-	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
-
 	blues_uart_driver_state.controller_rx_sem = cellular_rx_sem;
 
-	//  Init DMA transfer from memory to peripheral
-	// So I can see the respond from ESP32
-	// DMA is better than interrupt-based approach as it does not need to wake up CPU for every bytes
 	UART_Task_Init(&blues_uart_driver_state);
 
 	uart_logger_add_msg("[ESP32] Initialized blues note card uart driver\r\n",
@@ -155,7 +298,14 @@ static void CELLULAR_Task(void *argument) {
 			// Nothing to do here as the hub connection event will be caught by interrupt
 			break;
 		case CELLULAR_STATE_HUB_CONNECTED:
-			if (!cellular_handle_hub_connected()) {
+			if (cellular_handle_hub_connected()) {
+				cellular_state = CELLULAR_STATE_READY_TO_TRANSMIT;
+			} else {
+				cellular_state = CELLULAR_STATE_ERROR;
+			}
+			break;
+		case CELLULAR_STATE_READY_TO_TRANSMIT:
+			if (!cellular_handle_transmit()) {
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -163,12 +313,16 @@ static void CELLULAR_Task(void *argument) {
 			cellular_handle_error();
 
 			// Attempt resetting the NoteCard module
-			cellular_state = CELLULAR_STATE_RESET;
+			cellular_state = CELLULAR_STATE_WAIT_READY;
 			break;
 		}
 
 		osDelay(500);
 	}
+}
+
+static void uart_rx_line_callback_handler(const uint8_t *data, size_t len) {
+	osSemaphoreRelease(cellular_rx_sem);
 }
 
 static bool cellular_handle_reset() {
@@ -177,10 +331,10 @@ static bool cellular_handle_reset() {
 
 static bool cellular_handle_wait_ready() {
 	uart_logger_add_msg(
-			"[Blues] Wait for Blues Note Card to be ready for 30 seconds...\r\n",
+			"[Blues] Wait for Blues Note Card to be ready for 60 seconds...\r\n",
 			0);
 
-	osDelay(30000);
+	osDelay(60000);
 
 	uart_logger_add_msg("[Blues] Ready\r\n", 0);
 
@@ -233,8 +387,8 @@ static bool cellular_handle_ready() {
 	uart_logger_add_msg("\r\n[Blues] Retrieving NoteCard usage total...\r\n",
 			0);
 
-	if (!cellular_send_cmd_and_wait_respond(CELLULAR_ACQUIRE_BLUES_USAGE_TOTAL,
-			1000)) {
+	if (!cellular_send_cmd_and_wait_respond(
+	CELLULAR_ACQUIRE_BLUES_USAGE_TOTAL, 1000)) {
 		return false;
 	}
 
@@ -311,6 +465,24 @@ static bool cellular_handle_hub_connected() {
 	return true;
 }
 
+static bool cellular_handle_transmit() {
+	cellular_payload_t payload;
+
+	// Wait for items
+	osSemaphoreAcquire(cellular_payload_queue.items, osWaitForever);
+
+	if (cellular_payload_pop(&payload)) {
+		uart_logger_add_msg("[Cellular] Data is available!\r\n", 0);
+
+		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
+				payload.len, 3000);
+
+		return ret;
+	}
+
+	return true;
+}
+
 static bool cellular_handle_error() {
 	uart_logger_add_msg("\r\n[Cellular] AN ERROR HAS OCCURED!\r\n", 0);
 
@@ -334,27 +506,44 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 
-	// Send data into the uart interface that connects to esp32
+	// Send data into the uart interface that connects to blues
 	bool ret = uart_send_data(&blues_uart_driver_state, buf);
+
+	if (!ret) {
+		uart_logger_add_msg("[Cellular] Failed to send data over UART\r\n", 0);
+
+		return false;
+	}
 
 	// wait for response
 	if (osSemaphoreAcquire(cellular_rx_sem, timeout) == osOK) {
-		return ret;
+		return true;
 	} else {
 		// Timeout
 		uart_logger_add_msg("[Blues] Timeout.\r\n", 0);
 	}
 
-	return ret;
+	return true;
 }
 
-static bool cellular_transmit_data(const void *data, size_t bytes) {
-	if (cellular_state != CELLULAR_STATE_HUB_CONNECTED) {
-		uart_logger_add_msg(
-				"[Cellular] Blues NoteCard hub is not connected or mis-configured, reset or set correct parameters in firmware\r\n",
-				0);
+static bool cellular_payload_pop(cellular_payload_t *out) {
+	if (out == NULL)
+		return false;
+
+	osMutexAcquire(cellular_payload_queue.mutex, osWaitForever);
+
+	if (cellular_payload_queue.count == 0) {
+		osMutexRelease(cellular_payload_queue.mutex);
+
 		return false;
 	}
+
+	*out = cellular_payload_queue.buffer[cellular_payload_queue.tail];
+	cellular_payload_queue.tail = (cellular_payload_queue.tail + 1)
+			% CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY;
+	cellular_payload_queue.count--;
+
+	osMutexRelease(cellular_payload_queue.mutex);
 
 	return true;
 }
