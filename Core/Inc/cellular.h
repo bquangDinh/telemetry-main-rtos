@@ -32,6 +32,22 @@
 #define CELLULAR_MAX_DATA_LEN 64
 #define CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY 20
 
+typedef enum {
+	CELLULAR_STATE_RESET,
+	CELLULAR_STATE_WAIT_READY,
+	CELLULAR_STATE_READY,
+	CELLULAR_STATE_CONFIGURED,
+	CELLULAR_STATE_HUB_CONNECTED,
+	CELLULAR_STATE_READY_TO_TRANSMIT,
+	CELLULAR_STATE_ERROR
+} CellularState_t;
+
+typedef struct {
+	uint32_t last_progress;
+	uint32_t wait_start;
+	CellularState_t current_state;
+} cellular_health_state_t;
+
 void CELLULAR_Task_Init(UART_HandleTypeDef* blues_uart_interface);
 
 bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t* data, uint16_t len);

@@ -15,16 +15,6 @@
 #include "uart_logger.h"
 #include "uart_driver.h"
 
-typedef enum {
-	CELLULAR_STATE_RESET,
-	CELLULAR_STATE_WAIT_READY,
-	CELLULAR_STATE_READY,
-	CELLULAR_STATE_CONFIGURED,
-	CELLULAR_STATE_HUB_CONNECTED,
-	CELLULAR_STATE_READY_TO_TRANSMIT,
-	CELLULAR_STATE_ERROR
-} CellularState_t;
-
 typedef struct {
 	uint32_t id;
 	uint8_t payload[CELLULAR_MAX_DATA_LEN];
@@ -91,6 +81,9 @@ static bool acquired_hub_connection_status = false;
 
 static cellular_queue_t cellular_payload_queue;
 
+volatile cellular_health_state_t cellular_health_state = { .last_progress = 0,
+		.wait_start = 0, .current_state = CELLULAR_STATE_WAIT_READY };
+
 static void uart_rx_line_callback_handler(const uint8_t *data, size_t len);
 
 static bool cellular_handle_reset();
@@ -111,7 +104,7 @@ void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 
 	cellular_payload_queue.mutex = osMutexNew(NULL);
 	cellular_payload_queue.items = osSemaphoreNew(
-			CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
+	CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
 	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
 
 	cellularTaskHandler = osThreadNew(CELLULAR_Task, NULL, &cellularTaskAttr);
@@ -265,7 +258,11 @@ static void CELLULAR_Task(void *argument) {
 	uart_logger_add_msg("[ESP32] Initialized blues note card uart driver\r\n",
 			0);
 
+	cellular_health_state.last_progress = osKernelGetTickCount();
+
 	while (1) {
+		cellular_health_state.wait_start = osKernelGetTickCount();
+
 		switch (cellular_state) {
 		case CELLULAR_STATE_WAIT_READY:
 			// Wait until the Wifi module is ready to transmit
@@ -317,7 +314,11 @@ static void CELLULAR_Task(void *argument) {
 			break;
 		}
 
-		osDelay(500);
+		// Update wifi health info
+		cellular_health_state.last_progress = osKernelGetTickCount();
+		cellular_health_state.current_state = cellular_state;
+
+		osDelay(100);
 	}
 }
 

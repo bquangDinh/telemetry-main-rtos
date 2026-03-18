@@ -155,6 +155,10 @@ static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t
 			uart_state->rx_line_len = 0;
 		}
 	}
+
+	if (uart_state->rx_callback != NULL) {
+		uart_state->rx_callback(data, len);
+	}
 }
 
 static void uart_handle_line(uart_driver_state_t* uart_state, const uint8_t *line, size_t len) {

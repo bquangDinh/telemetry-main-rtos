@@ -112,7 +112,7 @@ static void CAN_CONTROLLER_Task(void *argument) {
 					uart_logger_add_msg("[CAN CONTROLLER] Added payload to cellular queue\r\n", 0);
 				}
 
-				if (WIFI_add_payload_to_queue((uint8_t*)msg, 256)) {
+				if (WIFI_add_payload_to_queue(WIFI_CAN_MESSAGE, can_driver_state.rx_can_id, can_driver_state.rx_buf, can_driver_state.rx_len)) {
 					uart_logger_add_msg("[CAN CONTROLLER] Added payload to wifi queue\r\n", 0);
 				}
 			}

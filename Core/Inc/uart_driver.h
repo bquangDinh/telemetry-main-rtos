@@ -18,6 +18,8 @@
 
 typedef void (*uart_rx_line_callback_t)(const uint8_t* data, size_t len);
 
+typedef void (*uart_rx_callback_t)(const uint8_t* data, size_t len);
+
 typedef struct {
 	// UART instance of this UART driver
 	UART_HandleTypeDef *huart;
@@ -57,6 +59,9 @@ typedef struct {
 	// The controller can provide a callback that will be called whenever a complete message arrived
 	// at UART
 	uart_rx_line_callback_t rx_line_callback;
+
+	// Callback gets called whenever something arrived at UART RX
+	uart_rx_callback_t rx_callback;
 } uart_driver_state_t;
 
 void UART_Task_Init(uart_driver_state_t* init_state);

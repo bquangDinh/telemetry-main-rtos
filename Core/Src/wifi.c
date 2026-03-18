@@ -16,21 +16,18 @@
 #include "utilities.h"
 #include "cmsis_os.h"
 
-typedef enum {
-	WIFI_STATE_RESET,
-	WIFI_STATE_WAIT_READY,
-	WIFI_STATE_JOIN_AP,
-	WIFI_STATE_CONNECTED,
-	WIFI_STATE_ERROR,
-} WifiState_t;
-
 typedef struct {
-	uint8_t payload[WIFI_MAX_DATA_LEN];
+	uint8_t message_type;
+	uint32_t id;
 	uint8_t len;
+	uint8_t payload[WIFI_MAX_DATA_LEN];
 } wifi_payload_t;
 
 typedef struct {
 	wifi_payload_t buffer[WIFI_PAYLOAD_QUEUE_MAX_CAPACITY];
+	wifi_payload_t pending_payload;
+	bool payload_processing;
+	uint8_t retries_count;
 	uint16_t tail;
 	uint16_t head;
 	uint16_t count;
@@ -58,6 +55,8 @@ static osThreadId_t wifiTaskHandler;
 
 static osSemaphoreId_t wifi_rx_sem;
 
+static osSemaphoreId_t wifi_disabled_sem;
+
 static const osThreadAttr_t wifiTaskAttr = { .name = "wifiTask", .stack_size =
 		512 * 4, .priority = (osPriority_t) osPriorityRealtime };
 
@@ -69,33 +68,45 @@ static wifi_queue_t wifi_payload_queue;
 
 static char esp32_last_response[RX_LINE_MAX_LEN];
 
+static uint8_t current_retry_count = 0;
+
+volatile wifi_health_state_t wifi_health_state = { .last_progress = 0,
+		.wait_start = 0, .current_state = WIFI_STATE_RESET };
+
 static bool wifi_handle_reset();
 static bool wifi_handle_wait_ready();
 static bool wifi_handle_join_ap();
 static bool wifi_handle_connected();
+static bool wifi_handle_disabled();
 static bool wifi_handle_error();
 
-static bool wifi_send_cmd_and_wait_respond(const char *fmt,
-		const uint16_t timeout, ...);
+//static bool wifi_send_cmd_and_wait_respond(const char *fmt,
+//		const uint16_t timeout, ...);
 
 static bool wifi_cmd_expect(const char *expected, const uint16_t timeout,
 		const char *fmt, ...);
 
 static bool wifi_payload_pop(wifi_payload_t *out);
 
+static void uart_rx_callback_handler(const uint8_t *data, size_t len);
+
 static void uart_rx_line_callback_handler(const uint8_t *data, size_t len);
 
 static bool wifi_is_terminal_response(const char *line);
 
+static void reset_queue();
+
 void WIFI_Task_Init(UART_HandleTypeDef *esp32_uart_interface) {
 	esp32_uart_driver_state.huart = esp32_uart_interface;
 	esp32_uart_driver_state.rx_line_callback = uart_rx_line_callback_handler;
+	esp32_uart_driver_state.rx_callback = uart_rx_callback_handler;
 
 	wifi_payload_queue.mutex = osMutexNew(NULL);
 	wifi_payload_queue.items = osSemaphoreNew(WIFI_PAYLOAD_QUEUE_MAX_CAPACITY,
 			0, NULL);
 
 	wifi_rx_sem = osSemaphoreNew(1, 0, NULL);
+	wifi_disabled_sem = osSemaphoreNew(1, 0, NULL);
 
 	wifiTaskHandler = osThreadNew(WIFI_Task, NULL, &wifiTaskAttr);
 }
@@ -106,7 +117,8 @@ void WIFI_esp32_uart_rx_callback(size_t len) {
 	}
 }
 
-bool WIFI_add_payload_to_queue(const uint8_t *data, uint16_t len) {
+bool WIFI_add_payload_to_queue(const wifi_message_type_t message_type,
+		const uint32_t id, const uint8_t *data, uint16_t len) {
 	if (data == NULL || len == 0)
 		return false;
 
@@ -124,7 +136,11 @@ bool WIFI_add_payload_to_queue(const uint8_t *data, uint16_t len) {
 		len = WIFI_MAX_DATA_LEN - 1;
 	}
 
+	slot->id = id;
+
 	slot->len = len;
+
+	slot->message_type = (uint8_t) message_type;
 
 	memset(slot->payload, 0, WIFI_MAX_DATA_LEN);
 
@@ -148,24 +164,13 @@ bool WIFI_transmit_data(const char *data, size_t bytes, const uint16_t timeout) 
 		return false;
 	}
 
-	if (!wifi_send_cmd_and_wait_respond(ESP_CMD_SEND_BYTES, 200, bytes))
+	if (!wifi_cmd_expect(ESP_OK, 200, ESP_CMD_SEND_BYTES, bytes))
 		return false;
 
-	if (!wifi_send_cmd_and_wait_respond(data, timeout))
+	if (!wifi_cmd_expect(ESP_OK, timeout, data))
 		return false;
 
 	return true;
-}
-
-bool WIIF_transmit_data_format(const char *fmt, const uint16_t timeout, ...) {
-	char buf[256];
-
-	va_list args;
-	va_start(args, timeout);
-	vsnprintf(buf, sizeof(buf), fmt, args);
-	va_end(args);
-
-	return WIFI_transmit_data(buf, 256, timeout);
 }
 
 static void WIFI_Task(void *argument) {
@@ -177,7 +182,11 @@ static void WIFI_Task(void *argument) {
 
 	uart_logger_add_msg("[ESP32] Initialized esp32 uart driver\r\n", 0);
 
+	wifi_health_state.last_progress = osKernelGetTickCount();
+
 	while (1) {
+		wifi_health_state.wait_start = osKernelGetTickCount();
+
 		switch (wifi_state) {
 		case WIFI_STATE_RESET:
 			if (wifi_handle_reset()) {
@@ -206,15 +215,33 @@ static void WIFI_Task(void *argument) {
 				wifi_state = WIFI_STATE_ERROR;
 			}
 			break;
+		case WIFI_STATE_DISABLED:
+			wifi_handle_disabled();
+
+			break;
 		case WIFI_STATE_ERROR:
 			wifi_handle_error();
 
-			// Attempt resetting the Wifi module
-			wifi_state = WIFI_STATE_RESET;
+			if (current_retry_count < WIFI_NUM_RETRIES) {
+				// Attempt resetting the Wifi module
+				wifi_state = WIFI_STATE_RESET;
+
+				current_retry_count++;
+			} else {
+				uart_logger_add_msg(
+						"[Wifi] Number of retries reached. Disable Wifi module\r\n",
+						0);
+
+				wifi_state = WIFI_STATE_DISABLED;
+			}
 			break;
 		}
 
-		osDelay(500);
+		// Update wifi health info
+		wifi_health_state.last_progress = osKernelGetTickCount();
+		wifi_health_state.current_state = wifi_state;
+
+		osDelay(100);
 	}
 }
 
@@ -237,10 +264,23 @@ static void uart_rx_line_callback_handler(const uint8_t *data, size_t len) {
 	}
 }
 
-static bool wifi_handle_reset() {
-	uart_logger_add_msg("[Wifi] Resetting, wait 1 second...\r\n", 0);
+static void uart_rx_callback_handler(const uint8_t *data, size_t len) {
+	// ESP32 responds
+	if (wifi_state == WIFI_STATE_DISABLED) {
+		uart_logger_add_msg(
+				"[Wifi] Received response from ESP32, re-enable ESP32\r\n", 0);
 
-	osDelay(1000);
+		// Re-enable ESP32 com if we receives something from esp32
+		osSemaphoreRelease(wifi_disabled_sem);
+	}
+}
+
+static bool wifi_handle_reset() {
+	uart_logger_add_msg("[Wifi] Resetting, wait 10 seconds...\r\n", 0);
+
+	reset_queue();
+
+	osDelay(10000);
 
 	return true;
 }
@@ -249,9 +289,9 @@ static bool wifi_handle_wait_ready() {
 	uart_logger_add_msg("[ESP32] Wait for ESP32 to be ready...\r\n", 0);
 
 	if (!wifi_cmd_expect(ESP_OK, 1000, ESP_CMD_HEALTH))
-			return false;
+		return false;
 
-	return false;
+	return true;
 }
 
 static bool wifi_handle_join_ap() {
@@ -291,20 +331,42 @@ static bool wifi_handle_join_ap() {
 }
 
 static bool wifi_handle_connected() {
-	wifi_payload_t payload;
+	bool payload_available = false;
 
-	// Wait for items
-	osSemaphoreAcquire(wifi_payload_queue.items, osWaitForever);
+	if (!wifi_payload_queue.payload_processing) {
+		// Wifi is currently not processing any pending payload
+		// Wait for items
+		if (osSemaphoreAcquire(wifi_payload_queue.items, 1000) == osOK) {
+			payload_available = wifi_payload_pop(&wifi_payload_queue.pending_payload);
+		}
+	}
 
-	if (wifi_payload_pop(&payload)) {
-		uart_logger_add_msg("[Wifi] Data is available!\r\n", 0);
+	if (payload_available) {
+		if (wifi_payload_queue.retries_count >= WIFI_PAYLOAD_TRANSMIT_RETRIES) return false;
 
-		bool ret = WIFI_transmit_data((char*) payload.payload, payload.len,
-				3000);
+		if (WIFI_transmit_data((char*) &wifi_payload_queue.pending_payload, sizeof(wifi_payload_t), 3000)) {
+			wifi_payload_queue.payload_processing = false;
 
-		osDelay(3000);
+			// Reset retries count
+			wifi_payload_queue.retries_count = 0;
+		} else {
+			// Failed to transmit, try again
+			wifi_payload_queue.retries_count++;
 
-		return ret;
+			wifi_payload_queue.payload_processing = true;
+		}
+	}
+
+	osDelay(500);
+
+	return true;
+}
+
+static bool wifi_handle_disabled() {
+	if (osSemaphoreAcquire(wifi_disabled_sem, 1000) == osOK) {
+		wifi_state = WIFI_STATE_RESET;
+
+		current_retry_count = 0;
 	}
 
 	return true;
@@ -316,42 +378,42 @@ static bool wifi_handle_error() {
 	return true;
 }
 
-static bool wifi_send_cmd_and_wait_respond(const char *fmt,
-		const uint16_t timeout, ...) {
-	/* drain stale signal */
-	while (osSemaphoreAcquire(wifi_rx_sem, 0) == osOK) {
-	}
-
-	char buf[128];
-	char out_msg[512];
-
-	va_list args;
-	va_start(args, timeout);
-	vsnprintf(buf, sizeof(buf), fmt, args);
-	va_end(args);
-
-	uart_logger_add_msg("[Wifi] Sent CMD\r\n", 0);
-
-	// Send data into the uart interface that connects to esp32
-	bool ret = uart_send_data(&esp32_uart_driver_state, buf);
-
-	// wait for response
-	if (osSemaphoreAcquire(wifi_rx_sem, timeout) == osOK) {
-		sprintf(out_msg, "[Wifi] CMD: %s | UART says: %s\r\n", buf,
-				esp32_uart_driver_state.rx_line_buf);
-
-		uart_logger_add_msg(out_msg, 256);
-
-		return ret;
-	} else {
-		// Timeout
-		uart_logger_add_msg("[ESP32] Timeout.\r\n", 0);
-
-		return false;
-	}
-
-	return ret;
-}
+//static bool wifi_send_cmd_and_wait_respond(const char *fmt,
+//		const uint16_t timeout, ...) {
+//	/* drain stale signal */
+//	while (osSemaphoreAcquire(wifi_rx_sem, 0) == osOK) {
+//	}
+//
+//	char buf[128];
+//	char out_msg[512];
+//
+//	va_list args;
+//	va_start(args, timeout);
+//	vsnprintf(buf, sizeof(buf), fmt, args);
+//	va_end(args);
+//
+//	uart_logger_add_msg("[Wifi] Sent CMD\r\n", 0);
+//
+//	// Send data into the uart interface that connects to esp32
+//	bool ret = uart_send_data(&esp32_uart_driver_state, buf);
+//
+//	// wait for response
+//	if (osSemaphoreAcquire(wifi_rx_sem, timeout) == osOK) {
+//		sprintf(out_msg, "[Wifi] CMD: %s | UART says: %s\r\n", buf,
+//				esp32_uart_driver_state.rx_line_buf);
+//
+//		uart_logger_add_msg(out_msg, 256);
+//
+//		return ret;
+//	} else {
+//		// Timeout
+//		uart_logger_add_msg("[ESP32] Timeout.\r\n", 0);
+//
+//		return false;
+//	}
+//
+//	return ret;
+//}
 
 static bool wifi_cmd_expect(const char *expected, const uint16_t timeout,
 		const char *fmt, ...) {
@@ -444,4 +506,20 @@ static bool wifi_is_terminal_response(const char *line) {
 			|| (len == 4 && memcmp(line, "FAIL", 4) == 0)
 			|| (len == 7 && memcmp(line, "SEND OK", 7) == 0)
 			|| (len == 9 && memcmp(line, "SEND FAIL", 9) == 0));
+}
+
+static void reset_queue() {
+	osMutexAcquire(wifi_payload_queue.mutex, osWaitForever);
+
+	// Reset the queue
+	wifi_payload_queue.head = 0;
+	wifi_payload_queue.tail = 0;
+	wifi_payload_queue.retries_count = 0;
+	wifi_payload_queue.payload_processing = false;
+
+    // drain semaphore to 0
+    while (osSemaphoreAcquire(wifi_payload_queue.items, 0) == osOK) {
+    }
+
+    osMutexRelease(wifi_payload_queue.mutex);
 }
