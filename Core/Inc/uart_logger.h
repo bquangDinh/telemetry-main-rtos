@@ -13,8 +13,8 @@
 
 #define UART_LOGGER_INSTANCE (&huart2)
 #define UART_LOG_ENABLE
-#define MSG_MAX_LEN 128
-#define MSG_QUEUE_MAX_CAPACITY 50
+#define MSG_MAX_LEN 256
+#define MSG_QUEUE_MAX_CAPACITY 20
 
 bool uart_logger_add_msg(const char* msg, size_t len);
 

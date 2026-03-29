@@ -11,6 +11,8 @@
 #include <stdbool.h>
 #include "stm32h7xx_hal.h"
 
+#define CELLULAR_NUM_RETRIES 3
+
 /* BLUES NOTE CARD UART Configs */
 #define CELLULAR_BLUES_PRODUCT_ID "com.gmail.rusolarcarclub:rsctest"
 #define CELLULAR_BLUES_SERIAL_NUMBER ""
@@ -39,7 +41,8 @@ typedef enum {
 	CELLULAR_STATE_CONFIGURED,
 	CELLULAR_STATE_HUB_CONNECTED,
 	CELLULAR_STATE_READY_TO_TRANSMIT,
-	CELLULAR_STATE_ERROR
+	CELLULAR_STATE_ERROR,
+	CELLULAR_STATE_DISABLED,
 } CellularState_t;
 
 typedef struct {
@@ -55,6 +58,10 @@ bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t* data, uint1
 bool CELLULAR_transmit_data(const uint32_t id, const uint8_t* data, size_t len, uint16_t timeout);
 
 void CELLULAR_blues_uart_rx_callback(size_t len);
+
+void CELLULAR_blues_uart_tx_callback();
+
+void CELLULAR_blues_uart_error_callback();
 
 void CELLULAR_ATTN_callback();
 

@@ -17,13 +17,17 @@ static osThreadId_t uartTaskHandler;
 static const osThreadAttr_t uartTaskAttr = { .name = "uartTask", .stack_size =
 		256 * 4, .priority = (osPriority_t) osPriorityNormal };
 
-static bool uart_dma_transfer_init(uart_driver_state_t* uart_state);
+static bool uart_dma_transfer_init(uart_driver_state_t *uart_state);
 
-static void uart_rx_process(uart_driver_state_t* uart_state);
+static void uart_rx_process(uart_driver_state_t *uart_state);
 
-static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t *data, size_t len);
+static void uart_rx_process_bytes(uart_driver_state_t *uart_state,
+		const uint8_t *data, size_t len);
 
-static void uart_handle_line(uart_driver_state_t* uart_state, const uint8_t *line, size_t len);
+static void uart_handle_line(uart_driver_state_t *uart_state,
+		const uint8_t *line, size_t len);
+
+static void uart_handle_error(uart_driver_state_t *uart_state);
 
 void UART_Task_Init(uart_driver_state_t *init_state) {
 	if (init_state == NULL)
@@ -49,7 +53,7 @@ void UART_Task_Init(uart_driver_state_t *init_state) {
 }
 
 static void UART_Task(void *argument) {
-	uart_driver_state_t* uart_state = (uart_driver_state_t*)argument;
+	uart_driver_state_t *uart_state = (uart_driver_state_t*) argument;
 
 	if (!uart_dma_transfer_init(uart_state)) {
 		uart_logger_add_msg("[UART Driver] Failed to init DMA transfer\r\n", 0);
@@ -58,7 +62,12 @@ static void UART_Task(void *argument) {
 	uart_state->initialized = true;
 
 	while (1) {
+		// Would be waken up if receive something or an error is detected
 		osSemaphoreAcquire(uart_state->uart_rx_sem, osWaitForever);
+
+		if (uart_state->uart_err != 0) {
+			uart_handle_error(uart_state);
+		}
 
 		if (uart_state->rx_ready) {
 			uart_state->rx_ready = false;
@@ -68,12 +77,18 @@ static void UART_Task(void *argument) {
 	}
 }
 
-bool uart_send_data(uart_driver_state_t* uart_state, const char *data) {
-	return HAL_UART_Transmit(uart_state->huart, (uint8_t*) data,
-			strlen(data), HAL_MAX_DELAY) == HAL_OK;
+bool uart_send_data(uart_driver_state_t *uart_state, const char *data) {
+	return HAL_UART_Transmit(uart_state->huart, (uint8_t*) data, strlen(data),
+			HAL_MAX_DELAY) == HAL_OK;
 }
 
-void on_uart_rx_callback(uart_driver_state_t* uart_state, size_t size) {
+bool uart_send_data_w_len(uart_driver_state_t *uart_state, const char *data,
+		size_t len) {
+	return HAL_UART_Transmit(uart_state->huart, (uint8_t*) data, len,
+			HAL_MAX_DELAY) == HAL_OK;
+}
+
+void on_uart_rx_callback(uart_driver_state_t *uart_state, size_t size) {
 	// Wake uart instance up
 	uart_state->rx_size = size;
 	uart_state->rx_ready = true;
@@ -83,9 +98,21 @@ void on_uart_rx_callback(uart_driver_state_t* uart_state, size_t size) {
 	}
 }
 
-static bool uart_dma_transfer_init(uart_driver_state_t* uart_state) {
-	if (HAL_UARTEx_ReceiveToIdle_DMA(uart_state->huart,
-			uart_state->rx_dma_buf, UART_DMA_BUFFER_SIZE) != HAL_OK) {
+void on_uart_tx_callback(uart_driver_state_t *uart_state) {
+	// Nothing to do here yet
+}
+
+void on_uart_err_callback(uart_driver_state_t *uart_state) {
+	uart_state->uart_err = HAL_UART_GetError(uart_state->huart);
+
+	if (uart_state->uart_rx_sem) {
+		osSemaphoreRelease(uart_state->uart_rx_sem);
+	}
+}
+
+static bool uart_dma_transfer_init(uart_driver_state_t *uart_state) {
+	if (HAL_UARTEx_ReceiveToIdle_DMA(uart_state->huart, uart_state->rx_dma_buf,
+			UART_DMA_BUFFER_SIZE) != HAL_OK) {
 		return false;
 	}
 
@@ -97,7 +124,7 @@ static bool uart_dma_transfer_init(uart_driver_state_t* uart_state) {
 	return true;
 }
 
-static void uart_rx_process(uart_driver_state_t* uart_state) {
+static void uart_rx_process(uart_driver_state_t *uart_state) {
 	size_t new_pos = UART_DMA_BUFFER_SIZE
 			- __HAL_DMA_GET_COUNTER(uart_state->huart->hdmarx);
 
@@ -106,22 +133,18 @@ static void uart_rx_process(uart_driver_state_t* uart_state) {
 		return;
 	}
 
-	uint8_t* rx_dma_buf = uart_state->rx_dma_buf;
+	uint8_t *rx_dma_buf = uart_state->rx_dma_buf;
 
 	if (new_pos > uart_state->dma_old_pos) {
 		// No wrapping around
-		uart_rx_process_bytes(
-				uart_state,
-				&rx_dma_buf[uart_state->dma_old_pos],
+		uart_rx_process_bytes(uart_state, &rx_dma_buf[uart_state->dma_old_pos],
 				new_pos - uart_state->dma_old_pos);
 	} else {
 		// Wrapping around
 		// There are two parts
 		// The first part is from old_pos to the end of the buffer
-		uart_rx_process_bytes(
-				uart_state,
-				&rx_dma_buf[uart_state->dma_old_pos],
-				UART_DMA_BUFFER_SIZE - uart_state->dma_old_pos);
+		uart_rx_process_bytes(uart_state, &rx_dma_buf[uart_state->dma_old_pos],
+		UART_DMA_BUFFER_SIZE - uart_state->dma_old_pos);
 
 		// The second part is from the beginning to new_pos
 		if (new_pos > 0) {
@@ -132,7 +155,8 @@ static void uart_rx_process(uart_driver_state_t* uart_state) {
 	uart_state->dma_old_pos = new_pos;
 }
 
-static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t *data, size_t len) {
+static void uart_rx_process_bytes(uart_driver_state_t *uart_state,
+		const uint8_t *data, size_t len) {
 	// Append to line buffer
 	// If '/n' is detected, it means a full respond has completed
 	char ch;
@@ -141,13 +165,11 @@ static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t
 		ch = data[i];
 
 		if (uart_state->rx_line_len < RX_LINE_MAX_LEN) {
-			uart_state->rx_line_buf[uart_state->rx_line_len++] =
-					ch;
+			uart_state->rx_line_buf[uart_state->rx_line_len++] = ch;
 		}
 
 		if (ch == '\n') {
-			uart_state->rx_line_buf[uart_state->rx_line_len] =
-					'\0';
+			uart_state->rx_line_buf[uart_state->rx_line_len] = '\0';
 
 			uart_handle_line(uart_state, uart_state->rx_line_buf,
 					uart_state->rx_line_len);
@@ -161,10 +183,65 @@ static void uart_rx_process_bytes(uart_driver_state_t* uart_state, const uint8_t
 	}
 }
 
-static void uart_handle_line(uart_driver_state_t* uart_state, const uint8_t *line, size_t len) {
+static void uart_handle_line(uart_driver_state_t *uart_state,
+		const uint8_t *line, size_t len) {
 	uart_logger_add_msg((char*) line, len);
 
 	if (uart_state->rx_line_callback != NULL) {
 		uart_state->rx_line_callback(line, len);
 	}
+}
+
+static void uart_handle_error(uart_driver_state_t *uart_state) {
+	uint32_t err = uart_state->uart_err;
+
+	if (err & HAL_UART_ERROR_PE) {
+		// Parity error
+		uart_logger_add_msg("[UART Driver] Parity err\r\n", 0);
+	}
+	if (err & HAL_UART_ERROR_NE) {
+		// Noise error
+		uart_logger_add_msg("[UART Driver] Noise err\r\n", 0);
+	}
+	if (err & HAL_UART_ERROR_FE) {
+		// Framing error
+		uart_logger_add_msg("[UART Driver] Framing err\r\n", 0);
+	}
+	if (err & HAL_UART_ERROR_ORE) {
+		// Overrun error
+		uart_logger_add_msg("[UART Driver] Overrun err\r\n", 0);
+	}
+	if (err & HAL_UART_ERROR_DMA) {
+		// DMA transfer error
+		uart_logger_add_msg("[UART Driver] DMA err\r\n", 0);
+	}
+#if defined(HAL_UART_ERROR_RTO)
+	if (err & HAL_UART_ERROR_RTO) {
+		// Receiver timeout
+		uart_logger_add_msg("[UART Driver] Timeout err\r\n", 0);
+	}
+#endif
+
+	uart_logger_add_msg("[UART Driver] Reseting UART driver...\r\n", 0);
+
+	__HAL_UART_CLEAR_FEFLAG(uart_state->huart);
+	__HAL_UART_CLEAR_NEFLAG(uart_state->huart);
+	__HAL_UART_CLEAR_OREFLAG(uart_state->huart);
+
+	if (HAL_UART_AbortReceive(uart_state->huart) != HAL_OK) {
+		uart_logger_add_msg("[UART Driver] Failed to reset UART\r\n", 0);
+
+		return;
+	}
+
+	// Re-init DMA transfer
+	if (!uart_dma_transfer_init(uart_state)) {
+		uart_logger_add_msg("[UART Driver] Failed to reset UART\r\n", 0);
+
+		return;
+	}
+
+	uart_state->uart_err = 0;
+
+	uart_logger_add_msg("[UART Driver] Reset UART\r\n", 0);
 }

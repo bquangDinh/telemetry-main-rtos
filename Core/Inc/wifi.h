@@ -54,6 +54,10 @@ void WIFI_Task_Init(UART_HandleTypeDef* esp32_uart_interface);
 
 void WIFI_esp32_uart_rx_callback(size_t len);
 
+void WIFI_esp32_uart_tx_callback();
+
+void WIFI_esp32_uart_error_callback();
+
 bool WIFI_add_payload_to_queue(const wifi_message_type_t message_type, const uint32_t id, const uint8_t* data, uint16_t len);
 
 bool WIFI_transmit_data(const char* data, size_t bytes, const uint16_t timeout);

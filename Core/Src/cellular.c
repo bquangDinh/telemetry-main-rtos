@@ -68,6 +68,8 @@ static osThreadId_t cellularTaskHandler;
 
 static osSemaphoreId_t cellular_rx_sem;
 
+static osSemaphoreId_t cellular_disabled_sem;
+
 static const osThreadAttr_t cellularTaskAttr = { .name = "cellularTask",
 		.stack_size = 256 * 4, .priority = (osPriority_t) osPriorityRealtime1 };
 
@@ -81,6 +83,8 @@ static bool acquired_hub_connection_status = false;
 
 static cellular_queue_t cellular_payload_queue;
 
+static volatile uint8_t current_retry_count = 0;
+
 volatile cellular_health_state_t cellular_health_state = { .last_progress = 0,
 		.wait_start = 0, .current_state = CELLULAR_STATE_WAIT_READY };
 
@@ -91,6 +95,7 @@ static bool cellular_handle_wait_ready();
 static bool cellular_handle_ready();
 static bool cellular_handle_hub_connected();
 static bool cellular_handle_transmit();
+static bool cellular_handle_disable();
 static bool cellular_handle_error();
 
 static bool cellular_send_cmd_and_wait_respond(const char *fmt,
@@ -105,7 +110,9 @@ void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 	cellular_payload_queue.mutex = osMutexNew(NULL);
 	cellular_payload_queue.items = osSemaphoreNew(
 	CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
+
 	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
+	cellular_disabled_sem = osSemaphoreNew(1, 0, NULL);
 
 	cellularTaskHandler = osThreadNew(CELLULAR_Task, NULL, &cellularTaskAttr);
 }
@@ -113,6 +120,18 @@ void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 void CELLULAR_blues_uart_rx_callback(size_t len) {
 	if (blues_uart_driver_state.initialized) {
 		on_uart_rx_callback(&blues_uart_driver_state, len);
+	}
+}
+
+void CELLULAR_blues_uart_tx_callback() {
+	if (blues_uart_driver_state.initialized) {
+		on_uart_tx_callback(&blues_uart_driver_state);
+	}
+}
+
+void CELLULAR_blues_uart_error_callback() {
+	if (blues_uart_driver_state.initialized) {
+		on_uart_err_callback(&blues_uart_driver_state);
 	}
 }
 
@@ -124,6 +143,10 @@ void CELLULAR_ATTN_callback() {
 	// Just to make sure the Blue Note Card has passed the configuration stage as this event could be fired sooner due to prior mis-configuration
 	if (cellular_state == CELLULAR_STATE_CONFIGURED) {
 		cellular_state = CELLULAR_STATE_HUB_CONNECTED;
+	} else if (cellular_state == CELLULAR_STATE_DISABLED) {
+		// In case the module has been disabled due to number of retries reached
+		// This one signal could wake the module back up and init again
+		osSemaphoreRelease(cellular_disabled_sem);
 	}
 }
 
@@ -306,11 +329,25 @@ static void CELLULAR_Task(void *argument) {
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
+		case CELLULAR_STATE_DISABLED:
+			cellular_handle_disable();
+
+			break;
 		case CELLULAR_STATE_ERROR:
 			cellular_handle_error();
 
-			// Attempt resetting the NoteCard module
-			cellular_state = CELLULAR_STATE_WAIT_READY;
+			if (current_retry_count < CELLULAR_NUM_RETRIES) {
+				// Attempt resetting the NoteCard module
+				cellular_state = CELLULAR_STATE_WAIT_READY;
+
+				current_retry_count++;
+			} else {
+				uart_logger_add_msg(
+						"[Cellular] Number of retries reached. Disable Cellular module\r\n",
+						0);
+				cellular_state = CELLULAR_STATE_DISABLED;
+			}
+
 			break;
 		}
 
@@ -332,10 +369,10 @@ static bool cellular_handle_reset() {
 
 static bool cellular_handle_wait_ready() {
 	uart_logger_add_msg(
-			"[Blues] Wait for Blues Note Card to be ready for 60 seconds...\r\n",
+			"[Blues] Wait for Blues Note Card to be ready for 3 seconds...\r\n",
 			0);
 
-	osDelay(60000);
+	osDelay(3000);
 
 	uart_logger_add_msg("[Blues] Ready\r\n", 0);
 
@@ -484,6 +521,16 @@ static bool cellular_handle_transmit() {
 	return true;
 }
 
+static bool cellular_handle_disable() {
+	if (osSemaphoreAcquire(cellular_disabled_sem, 1000) == osOK) {
+		cellular_state = CELLULAR_STATE_WAIT_READY;
+
+		current_retry_count = 0;
+	}
+
+	return true;
+}
+
 static bool cellular_handle_error() {
 	uart_logger_add_msg("\r\n[Cellular] AN ERROR HAS OCCURED!\r\n", 0);
 
@@ -491,11 +538,22 @@ static bool cellular_handle_error() {
 
 	cellular_hub_connected = false;
 
+	uart_logger_add_msg(
+			"\r\n[Cellular] Waiting 3 seconds before trying again...!\r\n", 0);
+
+	// Wait 3 seconds before try again
+	osDelay(3000);
+
 	return true;
 }
 
 static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 		const uint16_t timeout, ...) {
+	if (fmt == NULL) {
+		uart_logger_add_msg("[Cellular] Invalid arguments\r\n", 0);
+		return false;
+	}
+
 	/* drain stale signal */
 	while (osSemaphoreAcquire(cellular_rx_sem, 0) == osOK) {
 	}
@@ -522,6 +580,8 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 	} else {
 		// Timeout
 		uart_logger_add_msg("[Blues] Timeout.\r\n", 0);
+
+		return false;
 	}
 
 	return true;

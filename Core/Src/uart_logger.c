@@ -27,6 +27,8 @@ typedef struct {
 	osSemaphoreId_t dma_tx_done;
 	volatile bool dma_busy;
 	log_msg_t current_tx_msg;
+	log_msg_t pending_rx_msg;
+	bool rx_processing;
 } logger_t;
 
 static logger_t uart_logger_queue;
@@ -43,6 +45,8 @@ static const osThreadAttr_t uartLoggerTaskAttr = { .name = "uartLoggerTask",
 static void uart_print(const log_msg_t *msg);
 
 static bool uart_dma_print(const log_msg_t *msg);
+
+static void uart_print_str(const char *str);
 
 static bool msg_pop(log_msg_t *out);
 
@@ -108,14 +112,28 @@ void UART_LOGGER_dma_tx_cplt_callback() {
 
 static void UART_LOGGER_Task(void *argument) {
 	log_msg_t msg;
+	bool message_available = false;
+
+	uart_print_str("\r\n------------------------\r\n");
+	uart_print_str("       RSC 2026         \r\n");
+	uart_print_str("------------------------\r\n");
+	uart_print_str("  Telemetry Main Board  \r\n");
+	uart_print_str("       (v1.1.0)         \r\n");
+	uart_print_str("------------------------\r\n");
+	uart_print_str("   Quang. was here :))) \r\n");
+	uart_print_str("-----------S2-----------\r\n\r\n");
 
 	while (1) {
-		osSemaphoreAcquire(uart_logger_queue.items, osWaitForever);
+		if (!uart_logger_queue.rx_processing) {
+			osSemaphoreAcquire(uart_logger_queue.items, osWaitForever);
 
-		if (msg_pop(&msg)) {
+			message_available = msg_pop(&msg);
+		}
+
+		if (message_available || uart_logger_queue.rx_processing) {
 			if (uart_dma_print(&msg)) {
 				osSemaphoreAcquire(uart_logger_queue.dma_tx_done,
-						osWaitForever);
+				osWaitForever);
 			} else {
 				// Call normal print instead
 				uart_print(&msg);
@@ -126,11 +144,17 @@ static void UART_LOGGER_Task(void *argument) {
 
 static void uart_print(const log_msg_t *msg) {
 	HAL_UART_Transmit(UART_LOGGER_INSTANCE, (uint8_t*) msg->msg, msg->len,
-			HAL_MAX_DELAY);
+	HAL_MAX_DELAY);
+}
+
+static void uart_print_str(const char *str) {
+	HAL_UART_Transmit(UART_LOGGER_INSTANCE, (uint8_t*) str, strlen(str),
+	HAL_MAX_DELAY);
 }
 
 static bool uart_dma_print(const log_msg_t *msg) {
-	if (uart_logger_queue.dma_busy) return false;
+	if (uart_logger_queue.dma_busy)
+		return false;
 
 	memcpy((void*) &uart_logger_queue.current_tx_msg, (void*) msg,
 			sizeof(log_msg_t));

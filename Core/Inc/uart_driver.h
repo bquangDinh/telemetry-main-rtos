@@ -15,6 +15,7 @@
 
 #define UART_DMA_BUFFER_SIZE 512
 #define RX_LINE_MAX_LEN 128
+#define TX_MAX_LEN 128
 
 typedef void (*uart_rx_line_callback_t)(const uint8_t* data, size_t len);
 
@@ -62,11 +63,19 @@ typedef struct {
 
 	// Callback gets called whenever something arrived at UART RX
 	uart_rx_callback_t rx_callback;
+
+	uint32_t uart_err;
 } uart_driver_state_t;
 
 void UART_Task_Init(uart_driver_state_t* init_state);
 
 bool uart_send_data(uart_driver_state_t* uart_state, const char *data);
 
+bool uart_send_data_w_len(uart_driver_state_t* uart_state, const char *data, size_t len);
+
 void on_uart_rx_callback(uart_driver_state_t* uart_state, size_t size);
+
+void on_uart_tx_callback(uart_driver_state_t* uart_state);
+
+void on_uart_err_callback(uart_driver_state_t* uart_state);
 #endif /* INC_UART_DRIVER_H_ */

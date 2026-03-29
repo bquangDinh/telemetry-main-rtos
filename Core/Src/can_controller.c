@@ -121,7 +121,7 @@ static void CAN_CONTROLLER_Task(void *argument) {
 			HAL_GPIO_WritePin(CAN_CONTROLLER_RX_LED_PORT, CAN_CONTROLLER_RX_LED_PIN, GPIO_PIN_RESET);
 		}
 
-		osDelay(1000);
+		osDelay(100);
 	}
 }
 

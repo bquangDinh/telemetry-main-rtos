@@ -51,9 +51,11 @@ static void WATCHDOG_Task(void *argument) {
 
 		if (wifi_ok && cellular_ok) {
 			blink_green_led();
-
-			HAL_IWDG_Refresh(watchdog_timer);
+		} else {
+			HAL_GPIO_WritePin(WATCHDOG_LED_PORT, WATCHDOG_LED_PIN, GPIO_PIN_RESET);
 		}
+
+		HAL_IWDG_Refresh(watchdog_timer);
 
 		osDelay(100);
 	}
@@ -67,8 +69,8 @@ static uint8_t is_wifi_ok() {
 	if (wifi_health_state.current_state == WIFI_STATE_RESET
 			|| wifi_health_state.current_state == WIFI_STATE_WAIT_READY
 			|| wifi_health_state.current_state == WIFI_STATE_JOIN_AP) {
-		// The initial process should not take longer than 10 seconds
-		if ((now - wifi_health_state.last_progress) > 10000) {
+		// The initial process should not take longer than 30 seconds
+		if ((now - wifi_health_state.last_progress) > 30000) {
 			// Wifi takes longer than expected value
 			// means it could have stuck
 			wifi_ok = 0;
@@ -100,7 +102,7 @@ static uint8_t is_cellular_ok() {
 			|| cellular_health_state.current_state == CELLULAR_STATE_READY
 			|| cellular_health_state.current_state == CELLULAR_STATE_HUB_CONNECTED) {
 		// The initial process should not take longer than 2 minutes
-		if ((now - wifi_health_state.last_progress) > 120000) {
+		if ((now - cellular_health_state.last_progress) > 120000) {
 			// Cellular takes longer than expected value
 			// means it could have stuck
 			cellular_ok = 0;
@@ -109,7 +111,7 @@ static uint8_t is_cellular_ok() {
 			cellular_ok = 1;
 		}
 	} else {
-		if ((now - cellular_health_state.last_progress) > 1500) {
+		if ((now - cellular_health_state.last_progress) > 5000) {
 			// Cellular takes longer than expected value
 			// means it could have stuck
 			cellular_ok = 0;
