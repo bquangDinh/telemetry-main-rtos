@@ -57,8 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define USR_LED_1_Pin GPIO_PIN_2
-#define USR_LED_1_GPIO_Port GPIOE
+#define SYS_HEALTH_LED_Pin GPIO_PIN_2
+#define SYS_HEALTH_LED_GPIO_Port GPIOE
 #define NOTE_CARD_ATTN_Pin GPIO_PIN_5
 #define NOTE_CARD_ATTN_GPIO_Port GPIOE
 #define NOTE_CARD_ATTN_EXTI_IRQn EXTI9_5_IRQn
@@ -68,8 +68,20 @@ void Error_Handler(void);
 #define CAN_TX_LED_GPIO_Port GPIOB
 #define CAN_RX_LED_Pin GPIO_PIN_2
 #define CAN_RX_LED_GPIO_Port GPIOB
-#define USR_LED_2_Pin GPIO_PIN_5
-#define USR_LED_2_GPIO_Port GPIOB
+#define SD_DETECT_LED_Pin GPIO_PIN_10
+#define SD_DETECT_LED_GPIO_Port GPIOD
+#define RW_LED_Pin GPIO_PIN_0
+#define RW_LED_GPIO_Port GPIOD
+#define WIFI_HTH_LED_Pin GPIO_PIN_1
+#define WIFI_HTH_LED_GPIO_Port GPIOD
+#define WIFI_ERR_LED_Pin GPIO_PIN_3
+#define WIFI_ERR_LED_GPIO_Port GPIOD
+#define CELL_HTH_LED_Pin GPIO_PIN_4
+#define CELL_HTH_LED_GPIO_Port GPIOD
+#define CELL_ERR_LED_Pin GPIO_PIN_5
+#define CELL_ERR_LED_GPIO_Port GPIOD
+#define SYS_ERR_LED_Pin GPIO_PIN_5
+#define SYS_ERR_LED_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

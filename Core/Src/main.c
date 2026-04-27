@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -26,6 +27,7 @@
 #include "wifi.h"
 #include "cellular.h"
 #include "can_controller.h"
+#include "sd_card.h"
 #include "watchdog.h"
 /* USER CODE END Includes */
 
@@ -48,7 +50,11 @@
 
 FDCAN_HandleTypeDef hfdcan2;
 
+I2C_HandleTypeDef hi2c4;
+
 IWDG_HandleTypeDef hiwdg1;
+
+SD_HandleTypeDef hsd1;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
@@ -78,6 +84,8 @@ static void MX_UART4_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_IWDG1_Init(void);
+static void MX_I2C4_Init(void);
+static void MX_SDMMC1_SD_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
@@ -127,8 +135,10 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
   MX_IWDG1_Init();
+  MX_I2C4_Init();
+  MX_SDMMC1_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-  HAL_GPIO_WritePin(USR_LED_1_GPIO_Port, USR_LED_1_Pin, GPIO_PIN_SET);
 
   /* USER CODE END 2 */
 
@@ -160,10 +170,9 @@ int main(void)
 	UART_LOGGER_Task_Init();
 	WIFI_Task_Init(WIFI_ESP32_UART);
 	CELLULAR_Task_Init(CELLULAR_BLUES_UART);
+	SDCARD_Task_Init(SDCARD_INSTANCE);
 	CAN_CONTROLLER_Task_Init(CAN_CONTROLLER_CAN);
 	WATCHDOG_Task_Init(&hiwdg1);
-
-	HAL_GPIO_WritePin(USR_LED_2_GPIO_Port, USR_LED_2_Pin, GPIO_PIN_SET);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -301,6 +310,54 @@ static void MX_FDCAN2_Init(void)
 }
 
 /**
+  * @brief I2C4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C4_Init(void)
+{
+
+  /* USER CODE BEGIN I2C4_Init 0 */
+
+  /* USER CODE END I2C4_Init 0 */
+
+  /* USER CODE BEGIN I2C4_Init 1 */
+
+  /* USER CODE END I2C4_Init 1 */
+  hi2c4.Instance = I2C4;
+  hi2c4.Init.Timing = 0x10707DBC;
+  hi2c4.Init.OwnAddress1 = 0;
+  hi2c4.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c4.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c4.Init.OwnAddress2 = 0;
+  hi2c4.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c4.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c4.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c4, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c4, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C4_Init 2 */
+
+  /* USER CODE END I2C4_Init 2 */
+
+}
+
+/**
   * @brief IWDG1 Initialization Function
   * @param None
   * @retval None
@@ -326,6 +383,33 @@ static void MX_IWDG1_Init(void)
   /* USER CODE BEGIN IWDG1_Init 2 */
 
   /* USER CODE END IWDG1_Init 2 */
+
+}
+
+/**
+  * @brief SDMMC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SDMMC1_SD_Init(void)
+{
+
+  /* USER CODE BEGIN SDMMC1_Init 0 */
+
+  /* USER CODE END SDMMC1_Init 0 */
+
+  /* USER CODE BEGIN SDMMC1_Init 1 */
+
+  /* USER CODE END SDMMC1_Init 1 */
+  hsd1.Instance = SDMMC1;
+  hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
+  hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
+  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
+  hsd1.Init.ClockDiv = 248;
+  /* USER CODE BEGIN SDMMC1_Init 2 */
+
+  /* USER CODE END SDMMC1_Init 2 */
 
 }
 
@@ -393,7 +477,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -512,22 +596,28 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(USR_LED_1_GPIO_Port, USR_LED_1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SYS_HEALTH_LED_GPIO_Port, SYS_HEALTH_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CAN_ERR_LED_GPIO_Port, CAN_ERR_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, CAN_TX_LED_Pin|CAN_RX_LED_Pin|USR_LED_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, CAN_TX_LED_Pin|CAN_RX_LED_Pin|SYS_ERR_LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : USR_LED_1_Pin */
-  GPIO_InitStruct.Pin = USR_LED_1_Pin;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, SD_DETECT_LED_Pin|RW_LED_Pin|WIFI_HTH_LED_Pin|WIFI_ERR_LED_Pin
+                          |CELL_HTH_LED_Pin|CELL_ERR_LED_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : SYS_HEALTH_LED_Pin */
+  GPIO_InitStruct.Pin = SYS_HEALTH_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(USR_LED_1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(SYS_HEALTH_LED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : NOTE_CARD_ATTN_Pin */
   GPIO_InitStruct.Pin = NOTE_CARD_ATTN_Pin;
@@ -542,12 +632,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(CAN_ERR_LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : CAN_TX_LED_Pin CAN_RX_LED_Pin USR_LED_2_Pin */
-  GPIO_InitStruct.Pin = CAN_TX_LED_Pin|CAN_RX_LED_Pin|USR_LED_2_Pin;
+  /*Configure GPIO pins : CAN_TX_LED_Pin CAN_RX_LED_Pin SYS_ERR_LED_Pin */
+  GPIO_InitStruct.Pin = CAN_TX_LED_Pin|CAN_RX_LED_Pin|SYS_ERR_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : SD_DETECT_LED_Pin RW_LED_Pin WIFI_HTH_LED_Pin WIFI_ERR_LED_Pin
+                           CELL_HTH_LED_Pin CELL_ERR_LED_Pin */
+  GPIO_InitStruct.Pin = SD_DETECT_LED_Pin|RW_LED_Pin|WIFI_HTH_LED_Pin|WIFI_ERR_LED_Pin
+                          |CELL_HTH_LED_Pin|CELL_ERR_LED_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(NOTE_CARD_ATTN_EXTI_IRQn, 5, 0);
@@ -592,12 +691,22 @@ void HAL_FDCAN_TxBufferCompleteCallback(FDCAN_HandleTypeDef *hfdcan,
 	}
 }
 
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart == UART_LOGGER_INSTANCE)
-    {
-    	UART_LOGGER_dma_tx_cplt_callback();
-    }
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart == UART_LOGGER_INSTANCE) {
+		UART_LOGGER_dma_tx_cplt_callback();
+	} else if (huart == WIFI_ESP32_UART) {
+		WIFI_esp32_uart_tx_callback();
+	} else if (huart == CELLULAR_BLUES_UART) {
+		CELLULAR_blues_uart_tx_callback();
+	}
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == WIFI_ESP32_UART_INSTANCE) {
+		WIFI_esp32_uart_error_callback();
+	} else if (huart->Instance == CELLULAR_BLUES_UART_INSTANCE) {
+		CELLULAR_blues_uart_error_callback();
+	}
 }
 /* USER CODE END 4 */
 
