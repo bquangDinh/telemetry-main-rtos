@@ -13,12 +13,29 @@
 #include "cmsis_os.h"
 #include "stm32h7xx_hal.h"
 
+/**
+ * @brief Maximum size of the DMA buffer for UART reception
+ */
 #define UART_DMA_BUFFER_SIZE 512
+
+/**
+ * @brief Maximum length of a line received via UART
+ */
 #define RX_LINE_MAX_LEN 128
+
+/**
+ * @brief Maximum length of data that can be sent via UART
+ */
 #define TX_MAX_LEN 128
 
+/**
+ * @brief Type definition for the callback function called when a complete line is received via UART
+ */
 typedef void (*uart_rx_line_callback_t)(const uint8_t* data, size_t len);
 
+/**
+ * @brief Type definition for the callback function called when data is received via UART
+ */
 typedef void (*uart_rx_callback_t)(const uint8_t* data, size_t len);
 
 typedef struct {
@@ -67,15 +84,45 @@ typedef struct {
 	uint32_t uart_err;
 } uart_driver_state_t;
 
+/**
+ * @brief Initializes the UART task
+ * @param init_state Pointer to the UART driver state structure
+ */
 void UART_Task_Init(uart_driver_state_t* init_state);
 
+/**
+ * @brief Sends data via UART
+ * @param uart_state Pointer to the UART driver state structure
+ * @param data Pointer to the data to be sent
+ * @return true if data was sent successfully, false otherwise
+ */
 bool uart_send_data(uart_driver_state_t* uart_state, const char *data);
 
+/**
+ * @brief Sends data via UART with specified length
+ * @param uart_state Pointer to the UART driver state structure
+ * @param data Pointer to the data to be sent
+ * @param len Length of the data to be sent
+ * @return true if data was sent successfully, false otherwise
+ */
 bool uart_send_data_w_len(uart_driver_state_t* uart_state, const char *data, size_t len);
 
+/**
+ * @brief Callback function called when data is received via UART
+ * @param uart_state Pointer to the UART driver state structure
+ * @param size Size of the received data
+ */
 void on_uart_rx_callback(uart_driver_state_t* uart_state, size_t size);
 
+/**
+ * @brief Callback function called when data is transmitted via UART
+ * @param uart_state Pointer to the UART driver state structure
+ */
 void on_uart_tx_callback(uart_driver_state_t* uart_state);
 
+/**
+ * @brief Callback function called when an error occurs in the UART driver
+ * @param uart_state Pointer to the UART driver state structure
+ */
 void on_uart_err_callback(uart_driver_state_t* uart_state);
 #endif /* INC_UART_DRIVER_H_ */

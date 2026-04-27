@@ -10,9 +10,13 @@
 
 #include "wifi.h"
 #include "cellular.h"
+#include "sd_card.h"
 
-#define WATCHDOG_LED_PORT GPIOB
-#define WATCHDOG_LED_PIN GPIO_PIN_5
+#define WATCHDOG_LED_PORT GPIOE
+#define WATCHDOG_LED_PIN GPIO_PIN_2
+
+#define WATCHDOG_ERR_LED_PORT GPIOB
+#define WATCHDOG_ERR_LED_PIN GPIO_PIN_5
 
 static void WATCHDOG_Task(void *argument);
 
@@ -28,9 +32,13 @@ extern wifi_health_state_t wifi_health_state;
 
 extern cellular_health_state_t cellular_health_state;
 
+extern sdcard_health_state_t sdcard_health_state;
+
 static uint8_t is_wifi_ok();
 
 static uint8_t is_cellular_ok();
+
+static uint8_t is_sd_card_ok();
 
 static void blink_green_led();
 
@@ -43,16 +51,17 @@ void WATCHDOG_Task_Init(IWDG_HandleTypeDef* _watchdog_timer) {
 static void WATCHDOG_Task(void *argument) {
 	uint8_t wifi_ok = 0;
 	uint8_t cellular_ok = 0;
+	uint8_t sd_card_ok = 0;
 
 	while (1) {
 		wifi_ok = is_wifi_ok();
 
 		cellular_ok = is_cellular_ok();
 
-		if (wifi_ok && cellular_ok) {
+		sd_card_ok = is_sd_card_ok();
+
+		if (wifi_ok && cellular_ok && sd_card_ok) {
 			blink_green_led();
-		} else {
-			HAL_GPIO_WritePin(WATCHDOG_LED_PORT, WATCHDOG_LED_PIN, GPIO_PIN_RESET);
 		}
 
 		HAL_IWDG_Refresh(watchdog_timer);
@@ -122,6 +131,12 @@ static uint8_t is_cellular_ok() {
 	}
 
 	return cellular_ok;
+}
+
+static uint8_t is_sd_card_ok() {
+	uint32_t now = osKernelGetTickCount();
+
+	return now - sdcard_health_state.last_progress <= 1500;
 }
 
 static void blink_green_led() {

@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -26,6 +27,7 @@
 #include "wifi.h"
 #include "cellular.h"
 #include "can_controller.h"
+#include "sd_card.h"
 #include "watchdog.h"
 /* USER CODE END Includes */
 
@@ -135,8 +137,8 @@ int main(void)
   MX_IWDG1_Init();
   MX_I2C4_Init();
   MX_SDMMC1_SD_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-	HAL_GPIO_WritePin(USR_LED_1_GPIO_Port, USR_LED_1_Pin, GPIO_PIN_SET);
 
   /* USER CODE END 2 */
 
@@ -168,10 +170,9 @@ int main(void)
 	UART_LOGGER_Task_Init();
 	WIFI_Task_Init(WIFI_ESP32_UART);
 	CELLULAR_Task_Init(CELLULAR_BLUES_UART);
+	SDCARD_Task_Init(SDCARD_INSTANCE);
 	CAN_CONTROLLER_Task_Init(CAN_CONTROLLER_CAN);
 	WATCHDOG_Task_Init(&hiwdg1);
-
-	HAL_GPIO_WritePin(USR_LED_2_GPIO_Port, USR_LED_2_Pin, GPIO_PIN_SET);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -403,13 +404,9 @@ static void MX_SDMMC1_SD_Init(void)
   hsd1.Instance = SDMMC1;
   hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
   hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
-  hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-  hsd1.Init.ClockDiv = 0;
-  if (HAL_SD_Init(&hsd1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  hsd1.Init.ClockDiv = 248;
   /* USER CODE BEGIN SDMMC1_Init 2 */
 
   /* USER CODE END SDMMC1_Init 2 */
@@ -603,24 +600,24 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(USR_LED_1_GPIO_Port, USR_LED_1_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SYS_HEALTH_LED_GPIO_Port, SYS_HEALTH_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CAN_ERR_LED_GPIO_Port, CAN_ERR_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, CAN_TX_LED_Pin|CAN_RX_LED_Pin|USR_LED_2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, CAN_TX_LED_Pin|CAN_RX_LED_Pin|SYS_ERR_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10|GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3
-                          |GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOD, SD_DETECT_LED_Pin|RW_LED_Pin|WIFI_HTH_LED_Pin|WIFI_ERR_LED_Pin
+                          |CELL_HTH_LED_Pin|CELL_ERR_LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : USR_LED_1_Pin */
-  GPIO_InitStruct.Pin = USR_LED_1_Pin;
+  /*Configure GPIO pin : SYS_HEALTH_LED_Pin */
+  GPIO_InitStruct.Pin = SYS_HEALTH_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(USR_LED_1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(SYS_HEALTH_LED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : NOTE_CARD_ATTN_Pin */
   GPIO_InitStruct.Pin = NOTE_CARD_ATTN_Pin;
@@ -635,17 +632,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(CAN_ERR_LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : CAN_TX_LED_Pin CAN_RX_LED_Pin USR_LED_2_Pin */
-  GPIO_InitStruct.Pin = CAN_TX_LED_Pin|CAN_RX_LED_Pin|USR_LED_2_Pin;
+  /*Configure GPIO pins : CAN_TX_LED_Pin CAN_RX_LED_Pin SYS_ERR_LED_Pin */
+  GPIO_InitStruct.Pin = CAN_TX_LED_Pin|CAN_RX_LED_Pin|SYS_ERR_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PD10 PD0 PD1 PD3
-                           PD4 PD5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_3
-                          |GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : SD_DETECT_LED_Pin RW_LED_Pin WIFI_HTH_LED_Pin WIFI_ERR_LED_Pin
+                           CELL_HTH_LED_Pin CELL_ERR_LED_Pin */
+  GPIO_InitStruct.Pin = SD_DETECT_LED_Pin|RW_LED_Pin|WIFI_HTH_LED_Pin|WIFI_ERR_LED_Pin
+                          |CELL_HTH_LED_Pin|CELL_ERR_LED_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
