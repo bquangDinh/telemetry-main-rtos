@@ -14,6 +14,10 @@
 #include "cmsis_os.h"
 #include "stm32h7xx_hal.h"
 
+#if USE_USB_INTERFACE
+#include "usbd_cdc_if.h"
+#endif
+
 typedef struct {
 	char msg[MSG_MAX_LEN];
 	uint16_t len;
@@ -42,11 +46,33 @@ static osThreadId_t uartLoggerTaskHandler;
 static const osThreadAttr_t uartLoggerTaskAttr = { .name = "uartLoggerTask",
 		.stack_size = 1024 * 4, .priority = (osPriority_t) osPriorityLow };
 
+#if USE_UART_INTERFACE
 static void uart_print(const log_msg_t *msg);
 
 static bool uart_dma_print(const log_msg_t *msg);
 
 static void uart_print_str(const char *str);
+#endif
+
+#if USE_USB_INTERFACE
+static void usb_print(const log_msg_t *msg);
+
+static void usb_print_str(const char* str);
+#endif
+
+#if USE_USB_INTERFACE
+#define print(log_msg) usb_print(log_msg)
+#define print_str(log_str) usb_print_str(log_str)
+#define print_dma(log_msg) ((bool) 0)
+#elif USE_UART_INTERFACE
+#define print(log_msg) uart_print(log_msg)
+#define print_str(log_str) uart_print_str(log_str)
+#define print_dma(log_msg) uart_dma_print(log_msg)
+#else
+#define print(log_msg) ((void)0)
+#define print_str(log_str) ((void)0)
+#define print_dma(log_msg) ((void)0)
+#endif
 
 static bool msg_pop(log_msg_t *out);
 
@@ -79,6 +105,7 @@ void UART_LOGGER_Task_Init(void) {
 }
 
 bool uart_logger_add_msg(const char *msg, size_t len) {
+#if LOGGER_ENABLE
 	if (msg == NULL) {
 		return false;
 	}
@@ -115,11 +142,13 @@ bool uart_logger_add_msg(const char *msg, size_t len) {
 
 	// Signal that there is an item to consume
 	osSemaphoreRelease(uart_logger_queue.items);
+#endif
 
 	return true;
 }
 
 bool uart_logger_add_msg_format(const char *fmt, ...) {
+#if LOGGER_ENABLE
 	if (fmt == NULL) {
 		return false;
 	}
@@ -135,29 +164,32 @@ bool uart_logger_add_msg_format(const char *fmt, ...) {
 	if (len < 0 || len >= (int)sizeof(msg)) {
 		return false;
 	}
+#endif
 
 	return uart_logger_add_msg(msg, (size_t)len);
 }
 
 void UART_LOGGER_dma_tx_cplt_callback() {
+#if USE_UART_INTERFACE
 	// UART TX done transferring the last byte
 	uart_logger_queue.dma_busy = false;
 
 	osSemaphoreRelease(uart_logger_queue.dma_tx_done);
+#endif
 }
 
 static void UART_LOGGER_Task(void *argument) {
 	(void)argument;  // Unused parameter
 
 	// Print startup banner
-	uart_print_str("\r\n------------------------\r\n");
-	uart_print_str("       RSC 2026         \r\n");
-	uart_print_str("------------------------\r\n");
-	uart_print_str("  Telemetry Main Board  \r\n");
-	uart_print_str("       (v1.1.0)         \r\n");
-	uart_print_str("------------------------\r\n");
-	uart_print_str("   Quang. was here :))) \r\n");
-	uart_print_str("-----------S2-----------\r\n\r\n");
+	print_str("\r\n------------------------\r\n");
+	print_str("       RSC 2026         \r\n");
+	print_str("------------------------\r\n");
+	print_str("  Telemetry Main Board  \r\n");
+	print_str("       (v1.1.0)         \r\n");
+	print_str("------------------------\r\n");
+	print_str("   Quang. was here :))) \r\n");
+	print_str("-----------S2-----------\r\n\r\n");
 
 	log_msg_t msg;
 
@@ -172,16 +204,17 @@ static void UART_LOGGER_Task(void *argument) {
 		}
 
 		// Attempt DMA transmission
-		if (uart_dma_print(&msg)) {
+		if (print_dma(&msg)) {
 			// Wait for DMA to complete
 			osSemaphoreAcquire(uart_logger_queue.dma_tx_done, osWaitForever);
 		} else {
 			// Fall back to blocking transmission
-			uart_print(&msg);
+			print(&msg);
 		}
 	}
 }
 
+#if USE_UART_INTERFACE
 static void uart_print(const log_msg_t *msg) {
 	if (msg == NULL) {
 		return;
@@ -218,6 +251,21 @@ static bool uart_dma_print(const log_msg_t *msg) {
 
 	return false;
 }
+#endif
+
+#if USE_USB_INTERFACE
+static void usb_print(const log_msg_t *msg) {
+	if (msg == NULL) return;
+
+	CDC_Transmit_HS((uint8_t*)msg->msg, msg->len);
+}
+
+static void usb_print_str(const char* str) {
+	if (str == NULL) return;
+
+	CDC_Transmit_HS((uint8_t*)str, strlen(str));
+}
+#endif
 
 static bool msg_pop(log_msg_t *out) {
 	if (out == NULL) {

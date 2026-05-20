@@ -44,7 +44,7 @@
 
 #define WIFI_SSID "Olympus"
 #define WIFI_PASSWORD "Giveme5$"
-#define HOST_IP "192.168.86.22"
+#define HOST_IP "192.168.86.27"
 #define HOST_PORT 8080
 
 /**

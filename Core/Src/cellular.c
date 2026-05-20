@@ -74,6 +74,9 @@ typedef struct {
 // Puts the Notecard in DFU mode for IAP host MCU firmware updates. This mode is effectively the same as off in terms of the Notecard's network and Notehub connections.
 #define CELLULAR_BLUES_HUB_MODE_DFU "dfu"
 
+// Send data every 10 seconds
+#define CELLULAR_SYNC_INTERVAL_MS 10000U
+
 static void CELLULAR_Task(void *argument);
 
 static osThreadId_t cellularTaskHandler;
@@ -96,6 +99,8 @@ static bool acquired_hub_connection_status = false;
 static cellular_queue_t cellular_payload_queue;
 
 static volatile uint8_t current_retry_count = 0;
+
+static uint32_t last_sync_time_ms = 0;
 
 volatile cellular_health_state_t cellular_health_state = { .last_progress = 0,
 		.wait_start = 0, .current_state = CELLULAR_STATE_WAIT_READY };
@@ -126,6 +131,11 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
  * @return true if a payload was successfully popped from the queue and stored in the output parameter, false if the queue is empty and no payload was retrieved.
  */
 static bool cellular_payload_pop(cellular_payload_t *out);
+
+/**
+ * @brief Signal the NoteCard to send all pending data immediately
+ */
+static bool cellular_force_sync_with_note_card();
 
 /**
  * Logging functions
@@ -291,7 +301,7 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
 	// Start JSON
 	offset +=
 			snprintf(&buffer[offset], sizeof(buffer) - offset,
-					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"sync\":true,\"body\":{");
+					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"body\":{");
 
 	if (offset < 0 || offset >= (int) sizeof(buffer)) {
 		cellular_log("Failed to build Note JSON: Buffer overflow at JSON start");
@@ -601,7 +611,18 @@ static bool cellular_handle_transmit() {
 		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
 				payload.len, 3000);
 
-		return ret;
+		bool ret_sync = false;
+
+		// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
+		if (HAL_GetTick() - last_sync_time_ms > CELLULAR_SYNC_INTERVAL_MS) {
+			ret_sync = cellular_force_sync_with_note_card();
+
+			if (ret_sync) {
+				last_sync_time_ms = HAL_GetTick();	
+			}
+		}
+
+		return ret && ret_sync;
 	}
 
 	return true;
@@ -706,6 +727,21 @@ static bool cellular_payload_pop(cellular_payload_t *out) {
 	cellular_payload_queue.count--;
 
 	osMutexRelease(cellular_payload_queue.mutex);
+
+	return true;
+}
+
+static bool cellular_force_sync_with_note_card() {
+	cellular_log("Forcing sync with NoteCard...");
+
+	if (!cellular_send_cmd_and_wait_respond(
+	CELLULAR_HUB_FORCE_SYNC, 1000)) {
+		cellular_log("Failed to force sync with NoteCard");
+		
+		return false;
+	}
+
+	cellular_log("Successfully forced sync with NoteCard");
 
 	return true;
 }

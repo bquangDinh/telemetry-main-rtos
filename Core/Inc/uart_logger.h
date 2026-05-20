@@ -11,15 +11,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define USE_USB_INTERFACE 0
+#define USE_UART_INTERFACE 1
+
+#if USE_UART_INTERFACE
 /**
  * @brief Instance of the UART logger
  */
 #define UART_LOGGER_INSTANCE (&huart2)
+#endif
 
 /**
- * @brief Enable UART logging
+ * @brief Enable logging
  */
-#define UART_LOG_ENABLE
+#define LOGGER_ENABLE 1
 
 /**
  * @brief Maximum length of a log message

@@ -6,6 +6,7 @@
  */
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 
 #include "can_controller.h"
 #include "can_driver.h"
@@ -25,6 +26,29 @@
 #define CAN_PRETTY_PAYLOAD_MAX_BYTES 8U
 
 /**
+ * @brief Size of the cache for received CAN messages. This cache can be used to store incoming CAN messages before they are processed by the controller task, allowing for more efficient handling of bursts of CAN traffic and providing a buffer to manage the flow of messages through the system.
+ */
+#define CAN_CACHE_SIZE 16U
+
+/**
+ * @brief Interval in milliseconds for sending CAN messages. This interval can be used to control the rate at which CAN messages are sent from the controller, ensuring that messages are not sent too frequently and allowing for better management of the CAN bus traffic.
+ */
+#define CAN_SEND_INTERVAL_MS 10000U
+
+typedef struct
+{
+	uint32_t can_id;	// CAN message ID
+	uint8_t rx_buf[64]; // Buffer for received CAN message data
+	uint8_t rx_len;		// Length of the received CAN message data
+	bool valid;
+	bool dirty; // Indicates whether the message has been processed by the controller task
+	uint32_t last_seen_ms;
+	uint32_t last_sent_ms;
+} can_message_cache_entry_t;
+
+static can_message_cache_entry_t can_message_cache[CAN_CACHE_SIZE];
+
+/**
  * @brief CAN controller task function, which will be responsible for managing the CAN communication, including receiving messages, handling errors, and controlling the activity LEDs. The task will wait for messages to arrive (signaled by the RX semaphore), process the received messages, and handle any errors that occur during CAN communication. The task will also manage the state of the TX and RX LEDs based on the activity of the CAN interface.
  */
 static void CAN_CONTROLLER_Task(void *argument);
@@ -40,25 +64,24 @@ static osThreadId_t canControllerTaskHandler;
 static osSemaphoreId_t can_controller_rx_sem;
 static osSemaphoreId_t can_controller_tx_sem;
 
-static const osThreadAttr_t canControllerTaskAttr = { .name =
-		"canControllerTask", .stack_size = 256 * 4, .priority =
-		(osPriority_t) osPriorityRealtime };
+static const osThreadAttr_t canControllerTaskAttr = {.name =
+														 "canControllerTask",
+													 .stack_size = 256 * 4,
+													 .priority =
+														 (osPriority_t)osPriorityRealtime};
 
 /**
  * @brief State structure for the CAN driver, which will hold the necessary information and state variables for managing the CAN communication. This structure will be used by both the CAN driver and the CAN controller task to share information about received messages, transmission status, and error conditions. The structure includes fields for the CAN handle, semaphores for synchronization, message buffers and headers for transmission and reception, state variables for received messages, and an error code for tracking the last CAN operation.
  */
-static can_driver_state_t can_driver_state = { 0 };
+static can_driver_state_t can_driver_state = {0};
+
+static void handle_rx_can_message(uint32_t can_id, const uint8_t *data, uint8_t len);
 
 /**
  * @brief Helper function to format a CAN message into a human-readable string for logging purposes. This function will take the raw CAN message data and length, and format it into a string that includes the length of the message and the payload bytes in hexadecimal format. The formatted string will be used for logging received messages in a clear and concise manner.
  */
 static void format_pretty_CAN_message(char *buf, size_t buf_len,
-		const uint8_t *data, uint8_t len);
-
-/**
- * @brief Helper function to fan out the received CAN payload to other components of the system, such as the cellular and WiFi modules. This function will take the received CAN message and add it to the respective queues for the cellular and WiFi modules, allowing those components to process the incoming CAN data as needed.
- */
-static void fan_out_received_can_payload(void);
+									  const uint8_t *data, uint8_t len);
 
 /**
  * @brief Helper function to determine the number of blinks for the error LED based on the CAN error code. This function will analyze the error code and return a corresponding number of blinks that can be used to indicate the type of error that occurred, allowing for visual indication of different error conditions through the error LED.
@@ -70,26 +93,33 @@ static uint8_t can_get_error_blink_counts(uint32_t err);
  */
 static void can_error_led_task(void);
 
+static int find_cache_entry(uint32_t can_id);
+
+static void evict_cache_entry(int index);
+
+static bool should_send_message(uint32_t can_id, const uint8_t *data, uint8_t len);
+
 #if CAN_LOG_ENABLED
 static void can_logln_impl(const char *msg);
 static void can_log_raw_impl(const char *msg);
 
-#define can_logln(msg)              can_logln_impl(msg)
-#define can_log_raw(msg)            can_log_raw_impl(msg)
+#define can_logln(msg) can_logln_impl(msg)
+#define can_log_raw(msg) can_log_raw_impl(msg)
 #else
-#define can_logln(msg)              ((void)0)
-#define can_log_raw(msg)            ((void)0)
+#define can_logln(msg) ((void)0)
+#define can_log_raw(msg) ((void)0)
 #endif
 
 /**
  * @brief Initializes the CAN controller task and sets up the necessary state for managing CAN communication. This function will be called to start the CAN controller task, which will handle receiving messages, managing the activity LEDs, and processing errors. The function takes a pointer to the CAN handle as an argument, which will be used to initialize the CAN driver state and allow the controller task to interface with the CAN hardware.
  * @param can Pointer to the CAN handle used for initializing the CAN controller task.
  */
-void CAN_CONTROLLER_Task_Init(FDCAN_HandleTypeDef *can) {
+void CAN_CONTROLLER_Task_Init(FDCAN_HandleTypeDef *can)
+{
 	can_driver_state.can = can;
 
 	canControllerTaskHandler = osThreadNew(CAN_CONTROLLER_Task, NULL,
-			&canControllerTaskAttr);
+										   &canControllerTaskAttr);
 }
 
 /**
@@ -97,7 +127,8 @@ void CAN_CONTROLLER_Task_Init(FDCAN_HandleTypeDef *can) {
  * @param RxFifo0ITs Parameter indicating the interrupt status for the RX FIFO 0, which can be used to determine the type of event that occurred (e.g., new message received, FIFO full, etc.).
  * @note The function will handle the received message and release the RX semaphore.
  */
-void CAN_CONTROLLER_rx_callback(uint32_t RxFifo0ITs) {
+void CAN_CONTROLLER_rx_callback(uint32_t RxFifo0ITs)
+{
 	// Turn RX LED on
 	HAL_GPIO_WritePin(CAN_CONTROLLER_RX_LED_PORT, CAN_CONTROLLER_RX_LED_PIN, GPIO_PIN_SET);
 
@@ -109,7 +140,8 @@ void CAN_CONTROLLER_rx_callback(uint32_t RxFifo0ITs) {
  * @param BufferIndexes Parameter indicating which transmit buffer(s) have completed transmission, which can be used to manage the transmit buffer state and prepare for the next message to be sent.
  * @note The function will handle the transmission completion and release the TX semaphore.
  */
-void CAN_CONTROLLER_tx_callback(uint32_t BufferIndexes) {
+void CAN_CONTROLLER_tx_callback(uint32_t BufferIndexes)
+{
 	// Turn TX LED on
 	HAL_GPIO_WritePin(CAN_CONTROLLER_TX_LED_PORT, CAN_CONTROLLER_TX_LED_PIN, GPIO_PIN_SET);
 
@@ -120,7 +152,8 @@ void CAN_CONTROLLER_tx_callback(uint32_t BufferIndexes) {
  * @brief Callback function to be called by the CAN driver when an error occurs. This function will handle the occurrence of a CAN error, update the error state for LED indication, and allow the controller task to manage the error condition accordingly. The function will be called when an error is detected in the CAN communication, and it will update the error code in the CAN driver state, which can then be used by the controller task to control the error LED and log the error condition.
  * @note The function will handle the error and update the error state for LED indication.
  */
-void CAN_CONTROLLER_error_callback() {
+void CAN_CONTROLLER_error_callback()
+{
 	can_error_callback(&can_driver_state);
 }
 
@@ -130,19 +163,24 @@ void CAN_CONTROLLER_error_callback() {
  * @param len Length of the message payload in bytes.
  * @param timeout Timeout value for the transmission attempt.
  */
-void CAN_CONTROLLER_send_message(const uint8_t* payload, size_t len, uint16_t timeout) {
-	if (!can_send_message(&can_driver_state, payload, len)) {
+void CAN_CONTROLLER_send_message(const uint8_t *payload, size_t len, uint16_t timeout)
+{
+	if (!can_send_message(&can_driver_state, payload, len))
+	{
 		can_logln("Failed to send CAN message");
 		return;
 	}
 
 	// Wait until the message is sent
-	if (osSemaphoreAcquire(can_controller_tx_sem, timeout) == osOK) {
+	if (osSemaphoreAcquire(can_controller_tx_sem, timeout) == osOK)
+	{
 		can_logln("Sent CAN message");
 
 		// Turn off TX LED
 		HAL_GPIO_WritePin(CAN_CONTROLLER_TX_LED_PORT, CAN_CONTROLLER_TX_LED_PIN, GPIO_PIN_RESET);
-	} else {
+	}
+	else
+	{
 		can_logln("Failed to send CAN message -- Timeout");
 	}
 }
@@ -151,9 +189,8 @@ void CAN_CONTROLLER_send_message(const uint8_t* payload, size_t len, uint16_t ti
  * @brief CAN controller task function, which will be responsible for managing the CAN communication, including receiving messages, handling errors, and controlling the activity LEDs. The task will wait for messages to arrive (signaled by the RX semaphore), process the received messages, and handle any errors that occur during CAN communication. The task will also manage the state of the TX and RX LEDs based on the activity of the CAN interface.
  * @param argument Pointer to any arguments that may be needed for the task (not used in this implementation).
  */
-static void CAN_CONTROLLER_Task(void *argument) {
-	char msg[CAN_LOG_BUFFER_SIZE];
-
+static void CAN_CONTROLLER_Task(void *argument)
+{
 	can_logln("Initializing CAN driver...");
 
 	can_controller_rx_sem = osSemaphoreNew(1, 0, NULL);
@@ -166,7 +203,8 @@ static void CAN_CONTROLLER_Task(void *argument) {
 
 	can_logln("Initialized CAN driver...");
 
-	while (1) {
+	while (1)
+	{
 		// Waiting for messages to arrive
 		// rx sem can also be released by can driver in case of an error happened
 		osSemaphoreAcquire(can_controller_rx_sem, osWaitForever);
@@ -174,17 +212,12 @@ static void CAN_CONTROLLER_Task(void *argument) {
 		// In case of an error has occurred
 		can_error_led_task();
 
-		if (can_driver_state.can_error_code == HAL_FDCAN_ERROR_NONE) {
+		if (can_driver_state.can_error_code == HAL_FDCAN_ERROR_NONE)
+		{
 			// Message arrived
-			while (can_get_rx_message(&can_driver_state)) {
-				memset(msg, 0, sizeof(msg));
-
-				format_pretty_CAN_message(msg, sizeof(msg), can_driver_state.rx_buf,
-						can_driver_state.rx_len);
-
-				can_log_raw(msg);
-
-				fan_out_received_can_payload();
+			while (can_get_rx_message(&can_driver_state))
+			{
+				handle_rx_can_message(can_driver_state.rx_can_id, can_driver_state.rx_buf, can_driver_state.rx_len);
 			}
 
 			// Turn off RX LED
@@ -203,14 +236,17 @@ static void CAN_CONTROLLER_Task(void *argument) {
  * @param len Length of the CAN message data.
  */
 static void format_pretty_CAN_message(char *buf, size_t buf_len,
-		const uint8_t *data, uint8_t len) {
+									  const uint8_t *data, uint8_t len)
+{
 	int offset = 0;
 
-	offset += snprintf(buf + offset, buf_len - (size_t) offset,
-			"len: %u | ", len);
+	offset += snprintf(buf + offset, buf_len - (size_t)offset,
+					   "len: %u | ", len);
 
-	if (offset < 0 || (size_t) offset >= buf_len) {
-		if (buf_len > 0) {
+	if (offset < 0 || (size_t)offset >= buf_len)
+	{
+		if (buf_len > 0)
+		{
 			buf[buf_len - 1] = '\0';
 		}
 		return;
@@ -218,34 +254,22 @@ static void format_pretty_CAN_message(char *buf, size_t buf_len,
 
 	int show = (len < CAN_PRETTY_PAYLOAD_MAX_BYTES) ? len : CAN_PRETTY_PAYLOAD_MAX_BYTES;
 
-	for (int i = 0; i < show; ++i) {
-		offset += snprintf(buf + offset, buf_len - (size_t) offset, "%02X ",
-				data[i]);
+	for (int i = 0; i < show; ++i)
+	{
+		offset += snprintf(buf + offset, buf_len - (size_t)offset, "%02X ",
+						   data[i]);
 
-		if (offset < 0 || (size_t) offset >= buf_len) {
-			if (buf_len > 0) {
+		if (offset < 0 || (size_t)offset >= buf_len)
+		{
+			if (buf_len > 0)
+			{
 				buf[buf_len - 1] = '\0';
 			}
 			return;
 		}
 	}
 
-	(void) snprintf(buf + offset, buf_len - (size_t) offset, "\r\n");
-}
-
-/**
- * @brief Helper function to fan out the received CAN payload to other components of the system, such as the cellular and WiFi modules. This function will take the received CAN message and add it to the respective queues for the cellular and WiFi modules, allowing those components to process the incoming CAN data as needed.
- */
-static void fan_out_received_can_payload(void) {
-	if (CELLULAR_add_payload_to_queue(can_driver_state.rx_can_id,
-			can_driver_state.rx_buf, can_driver_state.rx_len)) {
-		can_logln("Added payload to cellular queue");
-	}
-
-	if (WIFI_add_payload_to_queue(WIFI_CAN_MESSAGE, can_driver_state.rx_can_id,
-			can_driver_state.rx_buf, can_driver_state.rx_len)) {
-		can_logln("Added payload to wifi queue");
-	}
+	(void)snprintf(buf + offset, buf_len - (size_t)offset, "\r\n");
 }
 
 #if CAN_LOG_ENABLED
@@ -253,7 +277,8 @@ static void fan_out_received_can_payload(void) {
  * @brief Log a message to the UART logger with a newline. This function will format the log message with a consistent prefix to indicate that it is related to the CAN controller, and it will add a newline at the end of the message for better readability in the log output.
  * @param msg Pointer to the message string to be logged.
  */
-static void can_logln_impl(const char *msg) {
+static void can_logln_impl(const char *msg)
+{
 	uart_logger_add_msg_format("[CAN CRL] %s\r\n", msg);
 }
 
@@ -261,7 +286,8 @@ static void can_logln_impl(const char *msg) {
  * @brief Log a raw message to the UART logger without adding a newline. This function will format the log message with a consistent prefix to indicate that it is related to the CAN controller, but it will not add a newline at the end of the message, allowing for more flexible logging of messages that may already include their own formatting or newlines.
  * @param msg Pointer to the message string to be logged.
  */
-static void can_log_raw_impl(const char *msg) {
+static void can_log_raw_impl(const char *msg)
+{
 	uart_logger_add_msg_format("[CAN CRL] %s", msg);
 }
 #endif
@@ -271,7 +297,8 @@ static void can_log_raw_impl(const char *msg) {
  * @param err The CAN error code to be analyzed.
  * @return The number of blinks for the error LED.
  */
-static uint8_t can_get_error_blink_counts(uint32_t err) {
+static uint8_t can_get_error_blink_counts(uint32_t err)
+{
 	if (err & HAL_FDCAN_ERROR_TIMEOUT)
 		return 1;
 	if (err & HAL_FDCAN_ERROR_NOT_INITIALIZED)
@@ -290,7 +317,8 @@ static uint8_t can_get_error_blink_counts(uint32_t err) {
 /**
  * @brief Helper function to manage the error LED behavior based on the current CAN error code. This function will control the blinking pattern of the error LED to indicate different types of errors, providing a visual indication of the error condition that can be observed without needing to check logs or other outputs.
  */
-static void can_error_led_task(void) {
+static void can_error_led_task(void)
+{
 	static uint32_t last_tick = 0;
 	static uint8_t blink_count = 0;
 	static uint8_t current_blink = 0;
@@ -303,20 +331,23 @@ static void can_error_led_task(void) {
 
 	// Handle FIFO full error with a fast blink pattern
 #ifdef HAL_FDCAN_ERROR_FIFO_FULL
-	if (can_error_code & HAL_FDCAN_ERROR_FIFO_FULL) {
-		if ((now - last_tick) > 100U) {
+	if (can_error_code & HAL_FDCAN_ERROR_FIFO_FULL)
+	{
+		if ((now - last_tick) > 100U)
+		{
 			last_tick = now;
 			HAL_GPIO_TogglePin(CAN_CONTROLLER_ERROR_LED_PORT,
-					CAN_CONTROLLER_ERROR_LED_PIN);
+							   CAN_CONTROLLER_ERROR_LED_PIN);
 		}
 		return;
 	}
 #endif
 
 	// If no error, reset the LED state and counters
-	if (can_error_code == HAL_FDCAN_ERROR_NONE) {
+	if (can_error_code == HAL_FDCAN_ERROR_NONE)
+	{
 		HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
-				CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
+						  CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
 		blink_count = 0;
 		current_blink = 0;
 		led_state = 0;
@@ -325,8 +356,10 @@ static void can_error_led_task(void) {
 	}
 
 	// If in pause between blink cycles, check if it's time to start the next cycle
-	if (in_pause) {
-		if ((now - last_tick) > 800U) {
+	if (in_pause)
+	{
+		if ((now - last_tick) > 800U)
+		{
 			in_pause = 0;
 			current_blink = 0;
 			led_state = 0;
@@ -337,7 +370,8 @@ static void can_error_led_task(void) {
 	}
 
 	// If not currently blinking, determine the number of blinks for the current error code
-	if (blink_count == 0) {
+	if (blink_count == 0)
+	{
 		blink_count = can_get_error_blink_counts(can_error_code);
 		current_blink = 0;
 		led_state = 0;
@@ -345,31 +379,156 @@ static void can_error_led_task(void) {
 	}
 
 	// If there is no error to indicate, ensure the LED is off and return
-	if (blink_count == 0) {
+	if (blink_count == 0)
+	{
 		HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
-				CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
+						  CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
 		return;
 	}
 
 	// Handle the blinking pattern for the error LED based on the current blink count and state
-	if ((now - last_tick) > 180U) {
+	if ((now - last_tick) > 180U)
+	{
 		last_tick = now;
 
-		if (led_state == 0) {
+		if (led_state == 0)
+		{
 			HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
-					CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_SET);
+							  CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_SET);
 			led_state = 1;
-		} else {
+		}
+		else
+		{
 			HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
-					CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
+							  CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
 			led_state = 0;
 			current_blink++;
 
-			if (current_blink >= blink_count) {
+			if (current_blink >= blink_count)
+			{
 				current_blink = 0;
 				blink_count = 0;
 				in_pause = 1;
 			}
 		}
 	}
+}
+
+static void handle_rx_can_message(uint32_t can_id, const uint8_t *data, uint8_t len)
+{
+	static char msg[CAN_LOG_BUFFER_SIZE];
+
+	memset(msg, 0, sizeof(msg));
+
+	format_pretty_CAN_message(msg, sizeof(msg), data, len);
+
+	can_log_raw(msg);
+
+	bool should_send = should_send_message(can_id, data, len);
+
+	if (!should_send)
+	{
+		can_logln("Message is not dirty and has been sent recently, skipping...");
+		return;
+	}
+
+	if (CELLULAR_add_payload_to_queue(can_id,
+									  data, len))
+	{
+		can_logln("Added payload to cellular queue");
+	}
+
+	if (WIFI_add_payload_to_queue(WIFI_CAN_MESSAGE, can_id,
+								  data, len))
+	{
+		can_logln("Added payload to wifi queue");
+	}
+}
+
+static int find_cache_entry(uint32_t can_id)
+{
+	for (int i = 0; i < CAN_CACHE_SIZE; ++i)
+	{
+		if (can_message_cache[i].valid && can_message_cache[i].can_id == can_id)
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void evict_cache_entry(int index)
+{
+	can_message_cache[index].valid = false;
+	can_message_cache[index].dirty = false;
+}
+
+static bool should_send_message(uint32_t can_id, const uint8_t *data, uint8_t len)
+{
+	// Find cache entry for the given CAN ID
+	int index = find_cache_entry(can_id);
+
+	if (index == -1)
+	{
+		// No existing entry, find an empty slot
+		for (int i = 0; i < CAN_CACHE_SIZE; ++i)
+		{
+			if (!can_message_cache[i].valid)
+			{
+				index = i;
+				break;
+			}
+		}
+
+		// If no empty slot, evict the least recently seen entry
+		if (index == -1)
+		{
+			uint32_t oldest_time = UINT32_MAX;
+			for (int i = 0; i < CAN_CACHE_SIZE; ++i)
+			{
+				if (can_message_cache[i].last_seen_ms < oldest_time)
+				{
+					oldest_time = can_message_cache[i].last_seen_ms;
+					index = i;
+				}
+			}
+			evict_cache_entry(index);
+		}
+
+		// Add new entry to cache
+		can_message_cache[index].can_id = can_id;
+		memcpy(can_message_cache[index].rx_buf, data, len);
+		can_message_cache[index].valid = true;
+		can_message_cache[index].dirty = false;
+		can_message_cache[index].last_seen_ms = HAL_GetTick();
+		can_message_cache[index].last_sent_ms = 0;
+
+		// Since this is a new message, we should send it anyway
+		can_message_cache[index].last_sent_ms = HAL_GetTick();
+
+		return true;
+	}
+
+	// Check if the message has changed since last seen
+	if ((memcmp(can_message_cache[index].rx_buf, data, len) != 0))
+	{
+		memcpy(can_message_cache[index].rx_buf, data, len);
+		can_message_cache[index].dirty = true;
+		can_message_cache[index].last_seen_ms = HAL_GetTick();
+
+		// If the message is dirty, we should send it
+		can_message_cache[index].last_sent_ms = HAL_GetTick();
+
+		return true;
+	}
+
+	// If the message is not dirty, check if it's been a while since we last sent it
+	if ((HAL_GetTick() - can_message_cache[index].last_sent_ms) > CAN_SEND_INTERVAL_MS)
+	{
+		can_message_cache[index].last_sent_ms = HAL_GetTick();
+		
+		return true;
+	}
+
+	return false;
 }

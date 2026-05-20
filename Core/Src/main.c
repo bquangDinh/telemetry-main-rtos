@@ -139,7 +139,7 @@ int main(void)
   MX_SDMMC1_SD_Init();
   MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_GPIO_WritePin(SYS_HEALTH_LED_GPIO_Port, SYS_HEALTH_LED_Pin, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -224,10 +224,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 16;
+  RCC_OscInitStruct.PLL.PLLM = 5;
+  RCC_OscInitStruct.PLL.PLLN = 24;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLQ = 5;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
@@ -277,10 +277,10 @@ static void MX_FDCAN2_Init(void)
   hfdcan2.Init.AutoRetransmission = DISABLE;
   hfdcan2.Init.TransmitPause = DISABLE;
   hfdcan2.Init.ProtocolException = DISABLE;
-  hfdcan2.Init.NominalPrescaler = 10;
+  hfdcan2.Init.NominalPrescaler = 6;
   hfdcan2.Init.NominalSyncJumpWidth = 1;
-  hfdcan2.Init.NominalTimeSeg1 = 8;
-  hfdcan2.Init.NominalTimeSeg2 = 1;
+  hfdcan2.Init.NominalTimeSeg1 = 13;
+  hfdcan2.Init.NominalTimeSeg2 = 2;
   hfdcan2.Init.DataPrescaler = 1;
   hfdcan2.Init.DataSyncJumpWidth = 1;
   hfdcan2.Init.DataTimeSeg1 = 1;
@@ -692,9 +692,13 @@ void HAL_FDCAN_TxBufferCompleteCallback(FDCAN_HandleTypeDef *hfdcan,
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+#if USE_UART_INTERFACE
 	if (huart == UART_LOGGER_INSTANCE) {
-		UART_LOGGER_dma_tx_cplt_callback();
-	} else if (huart == WIFI_ESP32_UART) {
+			UART_LOGGER_dma_tx_cplt_callback();
+	}
+#endif
+
+	if (huart == WIFI_ESP32_UART) {
 		WIFI_esp32_uart_tx_callback();
 	} else if (huart == CELLULAR_BLUES_UART) {
 		CELLULAR_blues_uart_tx_callback();
@@ -786,6 +790,10 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
 	/* User can add his own implementation to report the HAL error return state */
+	HAL_GPIO_WritePin(SYS_HEALTH_LED_GPIO_Port, SYS_HEALTH_LED_Pin, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(SYS_ERR_LED_GPIO_Port, SYS_ERR_LED_Pin, GPIO_PIN_SET);
+
 	__disable_irq();
 	while (1) {
 	}
