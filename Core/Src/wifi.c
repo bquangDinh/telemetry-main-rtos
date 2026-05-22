@@ -47,6 +47,8 @@ typedef struct {
 
 #define ESP_CMD_SET_MODE     "AT+CWMODE=%d\r\n"
 #define ESP_CMD_JOIN_AP      "AT+CWJAP=\"%s\",\"%s\"\r\n"
+#define ESP_CMD_DHCP_MODE    "AT+CWDHCP=%d,%d\r\n"
+#define ESP_CMD_QUIT_AP	 	 "AT+CWQAP\r\n"
 #define ESP_CMD_UDP_START    "AT+CIPSTART=\"UDP\",\"%s\",%d\r\n"
 #define ESP_CMD_SEND_BYTES   "AT+CIPSEND=%d\r\n"
 #define ESP_CMD_AT_VERSION	 "AT+GMR\r\n"
@@ -328,22 +330,45 @@ static bool wifi_handle_join_ap() {
 
 	osDelay(200);
 
+	uart_logger_add_msg("[ESP32] Displaying AT firmware version\r\n", 0);
+
 	// Display AT firmware version
 	if (!wifi_cmd_expect(ESP_OK, 1000, true, ESP_CMD_AT_VERSION))
 		return false;
 
 	osDelay(200);
 
+	uart_logger_add_msg("[ESP32] Joining AP...\r\n", 0);
+
+	uart_logger_add_msg("[ESP32] Setting mode...\r\n", 0);
+
+
 	if (!wifi_cmd_expect(ESP_OK, 1000, true, ESP_CMD_SET_MODE, 1))
 		return false;
 
 	osDelay(200);
 
-	if (!wifi_cmd_expect(ESP_OK, 3000, false, ESP_CMD_JOIN_AP, WIFI_SSID,
+	uart_logger_add_msg("[ESP32] Configuring AP settings...\r\n", 0);
+
+	if (!wifi_cmd_expect(ESP_OK, 3000, true, ESP_CMD_DHCP_MODE, 1, 1))
+		return false;
+
+	osDelay(200);
+
+	if (!wifi_cmd_expect(ESP_OK, 3000, true, ESP_CMD_QUIT_AP))
+		return false;
+
+	osDelay(200);
+
+	uart_logger_add_msg_format("[ESP32] Joining AP with SSID: %s\r\n", WIFI_SSID);
+
+	if (!wifi_cmd_expect(ESP_OK, 30000, true, ESP_CMD_JOIN_AP, WIFI_SSID,
 	WIFI_PASSWORD))
 		return false;
 
 	osDelay(3000);
+
+	uart_logger_add_msg("[ESP32] Starting UDP connection...\r\n", 0);
 
 	if (!wifi_cmd_expect(ESP_OK, 3000, true, ESP_CMD_UDP_START, HOST_IP,
 	HOST_PORT))

@@ -191,6 +191,51 @@ bool SDCARD_add_payload_to_queue(const char *message, const uint16_t len) {
 	return true;
 }
 
+bool SDCARD_add_can_message_to_queue(const uint32_t id, const uint8_t *data, uint16_t len) {
+
+	if (data == NULL || len == 0)
+		return false;
+
+	osMutexAcquire(sdcard_payload_queue.mutex, osWaitForever);
+
+	if (sdcard_payload_queue.count >= SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY) {
+		osMutexRelease(sdcard_payload_queue.mutex);
+
+		return false;
+	}
+
+	sdcard_payload_t *slot = &sdcard_payload_queue.buffer[sdcard_payload_queue.head];
+
+	if (len > SDCARD_MAX_DATA_LEN - 5) {
+		len = SDCARD_MAX_DATA_LEN - 5;
+	}
+
+	slot->len = len;
+
+	char formatted_data[SDCARD_MAX_DATA_LEN];
+
+	// Format: [id] [len] [data]
+	int offset = snprintf(formatted_data, sizeof(formatted_data), "%08X %02X ", id, len);
+
+	memcpy(formatted_data + offset, data, len);
+
+	memcpy(slot->payload, formatted_data, offset + len);
+
+	slot->time = osKernelGetTickCount();
+
+	sdcard_payload_queue.head = (sdcard_payload_queue.head + 1)
+			% SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY;
+
+	sdcard_payload_queue.count++;
+
+	osMutexRelease(sdcard_payload_queue.mutex);
+
+	// Signal the task there is item to consume
+	osSemaphoreRelease(sdcard_payload_queue.items);
+
+	return true;
+}
+
 static void SDCARD_Task(void *argument) {
 	sd_logln("Initializing sd card...");
 

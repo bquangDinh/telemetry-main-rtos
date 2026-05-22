@@ -14,6 +14,7 @@
 
 #include "wifi.h"
 #include "cellular.h"
+#include "sd_card.h"
 
 /**
  * @brief Size of the log buffer for CAN messages
@@ -442,6 +443,11 @@ static void handle_rx_can_message(uint32_t can_id, const uint8_t *data, uint8_t 
 								  data, len))
 	{
 		can_logln("Added payload to wifi queue");
+	}  
+
+	if (SDCARD_add_can_message_to_queue(can_id, data, len))
+	{
+		can_logln("Added CAN message to SD card queue");
 	}
 }
 
