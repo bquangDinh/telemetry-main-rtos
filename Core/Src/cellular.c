@@ -102,6 +102,8 @@ static volatile uint8_t current_retry_count = 0;
 
 static uint32_t last_sync_time_ms = 0;
 
+static uint16_t last_error_code = 0;
+
 volatile cellular_health_state_t cellular_health_state = { .last_progress = 0,
 		.wait_start = 0, .current_state = CELLULAR_STATE_WAIT_READY };
 
@@ -385,6 +387,8 @@ static void CELLULAR_Task(void *argument) {
 			if (cellular_handle_wait_ready()) {
 				cellular_state = CELLULAR_STATE_RESET;
 			} else {
+				last_error_code = 1;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -392,6 +396,8 @@ static void CELLULAR_Task(void *argument) {
 			if (cellular_handle_reset()) {
 				cellular_state = CELLULAR_STATE_READY;
 			} else {
+				last_error_code = 2;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -405,6 +411,8 @@ static void CELLULAR_Task(void *argument) {
 					cellular_state = CELLULAR_STATE_CONFIGURED;
 				}
 			} else {
+				last_error_code = 3;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -415,11 +423,15 @@ static void CELLULAR_Task(void *argument) {
 			if (cellular_handle_hub_connected()) {
 				cellular_state = CELLULAR_STATE_READY_TO_TRANSMIT;
 			} else {
+				last_error_code = 4;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
 		case CELLULAR_STATE_READY_TO_TRANSMIT:
 			if (!cellular_handle_transmit()) {
+				last_error_code = 5;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -472,6 +484,8 @@ static bool cellular_handle_reset() {
  * @brief Wait for the NoteCard to become ready after startup or reset.
  */
 static bool cellular_handle_wait_ready() {
+	last_error_code = 0;
+
 	cellular_log("Wait for Blues Note Card to be ready for 3 seconds...");
 
 	osDelay(3000);
@@ -606,10 +620,6 @@ static bool cellular_handle_hub_connected() {
  * @brief Keep the NoteCard alive and transmit queued payloads when available.
  */
 static bool cellular_handle_transmit() {
-	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_SET);
-
-	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_RESET);
-
 	cellular_payload_t payload;
 
 //	// Ping the cellular module to check if it's still ON
@@ -627,7 +637,11 @@ static bool cellular_handle_transmit() {
 		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
 				payload.len, 3000);
 
-		if (!ret) return false;
+		if (!ret) {
+			last_error_code = 6;
+
+			return false;
+		}
 
 		// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
 		if (HAL_GetTick() - last_sync_time_ms > CELLULAR_SYNC_INTERVAL_MS) {
@@ -636,6 +650,8 @@ static bool cellular_handle_transmit() {
 			if (ret_sync) {
 				last_sync_time_ms = HAL_GetTick();	
 			} else {
+				last_error_code = 7;
+
 				return false;
 			}
 		}
@@ -661,7 +677,7 @@ static bool cellular_handle_disable() {
  * @brief Handle the error state by resetting flags, updating LEDs, and delaying retry.
  */
 static bool cellular_handle_error() {
-	cellular_log("AN ERROR HAS OCCURED!");
+	cellular_log_fmt("AN ERROR HAS OCCURED | Code: %u", last_error_code);
 
 	acquired_hub_connection_status = false;
 
