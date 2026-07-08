@@ -237,6 +237,18 @@ bool SDCARD_add_can_message_to_queue(const uint32_t id, const uint8_t *data, uin
 }
 
 static void SDCARD_Task(void *argument) {
+	HAL_GPIO_WritePin(SDCARD_RW_LED_PORT, SDCARD_RW_LED_PIN, GPIO_PIN_SET);
+
+	HAL_GPIO_WritePin(SDCARD_DETECT_LED_PORT, SDCARD_DETECT_LED_PIN,
+			GPIO_PIN_SET);
+
+	osDelay(1000);
+
+	HAL_GPIO_WritePin(SDCARD_RW_LED_PORT, SDCARD_RW_LED_PIN, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(SDCARD_DETECT_LED_PORT, SDCARD_DETECT_LED_PIN,
+			GPIO_PIN_RESET);
+
 	sd_logln("Initializing sd card...");
 
 	sdcard_health_state.last_progress = osKernelGetTickCount();
@@ -416,6 +428,11 @@ static bool sdcard_handle_error() {
 		sd_logln("Number of retries reached. Disabled SD Card");
 
 		sdcard_state = SDCARD_STATE_DISABLED;
+
+		HAL_GPIO_WritePin(SDCARD_RW_LED_PORT, SDCARD_RW_LED_PIN, GPIO_PIN_RESET);
+
+		HAL_GPIO_WritePin(SDCARD_DETECT_LED_PORT, SDCARD_DETECT_LED_PIN,
+				GPIO_PIN_RESET);
 	}
 
 	return true;

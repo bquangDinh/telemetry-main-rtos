@@ -204,6 +204,16 @@ bool WIFI_transmit_data(const char *data, size_t bytes, const uint16_t timeout) 
 }
 
 static void WIFI_Task(void *argument) {
+	HAL_GPIO_WritePin(WIFI_HEALTH_LED_PORT, WIFI_HEALTH_LED_PIN, GPIO_PIN_SET);
+
+	HAL_GPIO_WritePin(WIFI_ERR_LED_PORT, WIFI_ERR_LED_PIN, GPIO_PIN_SET);
+
+	osDelay(1000);
+
+	HAL_GPIO_WritePin(WIFI_HEALTH_LED_PORT, WIFI_HEALTH_LED_PIN, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(WIFI_ERR_LED_PORT, WIFI_ERR_LED_PIN, GPIO_PIN_RESET);
+
 	uart_logger_add_msg("[ESP32] Initializing esp32 uart driver...\r\n", 0);
 
 	esp32_uart_driver_state.controller_rx_sem = wifi_rx_sem;

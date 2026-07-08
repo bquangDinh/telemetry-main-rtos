@@ -261,6 +261,8 @@ bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t *data,
 
 	slot->len = len;
 
+	slot->id = id;
+
 	memset(slot->payload, 0, CELLULAR_MAX_DATA_LEN);
 
 	memcpy(slot->payload, data, len);
@@ -338,7 +340,7 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
 	}
 
 	offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
-			"\",\"len\":%lu}}\n", (unsigned long) len);
+			"\",\"len\":%lu}}\r\n", (unsigned long) len);
 
 	if (offset < 0 || offset >= (int) sizeof(buffer)) {
 		cellular_log("Failed to build Note JSON: Buffer overflow while writing payload");
@@ -354,6 +356,16 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
  * @brief Main cellular task that drives the NoteCard state machine.
  */
 static void CELLULAR_Task(void *argument) {
+	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_SET);
+
+	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_SET);
+
+	osDelay(1000);
+
+	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_RESET);
+
 	cellular_log("Initializing blues note card uart driver...");
 
 	blues_uart_driver_state.controller_rx_sem = cellular_rx_sem;
@@ -594,13 +606,17 @@ static bool cellular_handle_hub_connected() {
  * @brief Keep the NoteCard alive and transmit queued payloads when available.
  */
 static bool cellular_handle_transmit() {
+	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_SET);
+
+	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_RESET);
+
 	cellular_payload_t payload;
 
-	// Ping the cellular module to check if it's still ON
-	if (!cellular_send_cmd_and_wait_respond(
-			CELLULAR_ACQUIRE_HUB_STATUS, 1000)) {
-				return false;
-			}
+//	// Ping the cellular module to check if it's still ON
+//	if (!cellular_send_cmd_and_wait_respond(
+//			CELLULAR_ACQUIRE_HUB_STATUS, 1000)) {
+//				return false;
+//			}
 
 	// Wait for items
 	osSemaphoreAcquire(cellular_payload_queue.items, 1000);
@@ -611,18 +627,18 @@ static bool cellular_handle_transmit() {
 		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
 				payload.len, 3000);
 
-		bool ret_sync = false;
+		if (!ret) return false;
 
 		// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
 		if (HAL_GetTick() - last_sync_time_ms > CELLULAR_SYNC_INTERVAL_MS) {
-			ret_sync = cellular_force_sync_with_note_card();
+			bool ret_sync = cellular_force_sync_with_note_card();
 
 			if (ret_sync) {
 				last_sync_time_ms = HAL_GetTick();	
+			} else {
+				return false;
 			}
 		}
-
-		return ret && ret_sync;
 	}
 
 	return true;
