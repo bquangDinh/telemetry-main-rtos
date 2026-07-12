@@ -34,7 +34,7 @@
 /**
  * @brief Maximum capacity of the log message queue
  */
-#define MSG_QUEUE_MAX_CAPACITY 100
+#define MSG_QUEUE_MAX_CAPACITY 20
 
 /**
  * @brief Adds a log message to the queue

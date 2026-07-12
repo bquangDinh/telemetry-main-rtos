@@ -185,6 +185,24 @@ void CAN_CONTROLLER_send_message(const uint8_t *payload, size_t len,
  * @param argument Pointer to any arguments that may be needed for the task (not used in this implementation).
  */
 static void CAN_CONTROLLER_Task(void *argument) {
+	// Testing LEDs
+	HAL_GPIO_WritePin(CAN_CONTROLLER_TX_LED_PORT, CAN_CONTROLLER_TX_LED_PIN,
+			GPIO_PIN_SET);
+	HAL_GPIO_WritePin(CAN_CONTROLLER_RX_LED_PORT, CAN_CONTROLLER_RX_LED_PIN,
+			GPIO_PIN_SET);
+	HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
+			CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_SET);
+
+	osDelay(1000);
+
+	HAL_GPIO_WritePin(CAN_CONTROLLER_TX_LED_PORT, CAN_CONTROLLER_TX_LED_PIN,
+			GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(CAN_CONTROLLER_RX_LED_PORT, CAN_CONTROLLER_RX_LED_PIN, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(CAN_CONTROLLER_ERROR_LED_PORT,
+			CAN_CONTROLLER_ERROR_LED_PIN, GPIO_PIN_RESET);
+
 	can_logln("Initializing CAN driver...");
 
 	can_controller_rx_sem = osSemaphoreNew(1, 0, NULL);

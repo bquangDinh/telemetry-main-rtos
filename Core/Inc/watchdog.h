@@ -18,6 +18,6 @@
 /**
  * @brief Initializes the watchdog task and sets up the watchdog timer for monitoring the health of the system. This function will create the watchdog task, which will periodically check the health state of the system components and reset the system if necessary. The function takes a pointer to the watchdog timer handle, which will be used to manage the watchdog timer and perform resets when needed.
  */
-void WATCHDOG_Task_Init();
+void WATCHDOG_Task_Init(IWDG_HandleTypeDef* _watchdog_timer);
 
 #endif /* INC_WATCHDOG_H_ */

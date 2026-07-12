@@ -26,6 +26,9 @@
 // Sync every 500ms
 #define SYNC_INTERVAL 500
 
+// Maximum time to wait for the SD card to return to transfer state
+#define SD_RAW_READ_WAIT_TIMEOUT_MS 1000
+
 #define DATA_FILE "data.dat"
 #define TEST_FILE "test.txt"
 
@@ -191,52 +194,74 @@ bool SDCARD_add_payload_to_queue(const char *message, const uint16_t len) {
 	return true;
 }
 
-bool SDCARD_add_can_message_to_queue(const uint32_t id, const uint8_t *data, uint16_t len) {
+bool SDCARD_add_can_message_to_queue(const uint32_t id,
+                                     const uint8_t *data,
+                                     uint16_t len)
+{
+    if (data == NULL || len == 0)
+        return false;
 
-	if (data == NULL || len == 0)
-		return false;
+    osMutexAcquire(sdcard_payload_queue.mutex, osWaitForever);
 
-	osMutexAcquire(sdcard_payload_queue.mutex, osWaitForever);
+    if (sdcard_payload_queue.count >= SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY) {
+        osMutexRelease(sdcard_payload_queue.mutex);
+        return false;
+    }
 
-	if (sdcard_payload_queue.count >= SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY) {
-		osMutexRelease(sdcard_payload_queue.mutex);
+    sdcard_payload_t *slot =
+        &sdcard_payload_queue.buffer[sdcard_payload_queue.head];
 
-		return false;
-	}
+    char formatted_data[SDCARD_MAX_DATA_LEN];
 
-	sdcard_payload_t *slot = &sdcard_payload_queue.buffer[sdcard_payload_queue.head];
+    // Format: [can_len] [can_id] [can_payload_hex]
+    int offset = snprintf(formatted_data,
+                          sizeof(formatted_data),
+                          "%u %08lX ",
+                          len,
+                          (unsigned long)id);
 
-	if (len > SDCARD_MAX_DATA_LEN - 5) {
-		len = SDCARD_MAX_DATA_LEN - 5;
-	}
+    if (offset < 0 || offset >= (int)sizeof(formatted_data)) {
+        osMutexRelease(sdcard_payload_queue.mutex);
+        return false;
+    }
 
-	slot->len = len;
+    for (uint16_t i = 0; i < len; i++) {
+        int written = snprintf(formatted_data + offset,
+                               sizeof(formatted_data) - offset,
+                               "%02X%s",
+                               data[i],
+                               (i + 1 < len) ? " " : "");
 
-	char formatted_data[SDCARD_MAX_DATA_LEN];
+        if (written < 0 ||
+            written >= (int)(sizeof(formatted_data) - offset)) {
+            osMutexRelease(sdcard_payload_queue.mutex);
+            return false;
+        }
 
-	// Format: [id] [len] [data]
-	int offset = snprintf(formatted_data, sizeof(formatted_data), "%08X %02X ", id, len);
+        offset += written;
+    }
 
-	memcpy(formatted_data + offset, data, len);
+    slot->time = osKernelGetTickCount();
+    slot->len = (uint8_t)offset;
 
-	memcpy(slot->payload, formatted_data, offset + len);
+    memcpy(slot->payload, formatted_data, slot->len);
+    slot->payload[slot->len] = '\0';
 
-	slot->time = osKernelGetTickCount();
+    sdcard_payload_queue.head =
+        (sdcard_payload_queue.head + 1) %
+        SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY;
 
-	sdcard_payload_queue.head = (sdcard_payload_queue.head + 1)
-			% SDCARD_PAYLOAD_QUEUE_MAX_CAPACITY;
+    sdcard_payload_queue.count++;
 
-	sdcard_payload_queue.count++;
+    osMutexRelease(sdcard_payload_queue.mutex);
 
-	osMutexRelease(sdcard_payload_queue.mutex);
+    osSemaphoreRelease(sdcard_payload_queue.items);
 
-	// Signal the task there is item to consume
-	osSemaphoreRelease(sdcard_payload_queue.items);
-
-	return true;
+    return true;
 }
 
 static void SDCARD_Task(void *argument) {
+	// Make sure the LEDs are working
 	HAL_GPIO_WritePin(SDCARD_RW_LED_PORT, SDCARD_RW_LED_PIN, GPIO_PIN_SET);
 
 	HAL_GPIO_WritePin(SDCARD_DETECT_LED_PORT, SDCARD_DETECT_LED_PIN,
@@ -266,6 +291,9 @@ static void SDCARD_Task(void *argument) {
 			break;
 		case SDCARD_STATE_MOUNT_AND_OPEN:
 			if (sdcard_handle_mount_open()) {
+				// Reset retry
+				current_retry_count = 0;
+
 				sdcard_state = SDCARD_STATE_READY;
 			} else {
 				sdcard_state = SDCARD_STATE_ERROR;
@@ -592,7 +620,13 @@ static bool write_to_card(const sdcard_payload_t *payload) {
 	bool should_sync = (now - last_sync) >= SYNC_INTERVAL;
 
 	if (should_sync) {
-		f_sync(&file);
+		res = f_sync(&file);
+
+		if (res != FR_OK) {
+			sd_log_fs_error(res);
+
+			return false;
+		}
 
 		last_sync = now;
 	}
@@ -783,6 +817,7 @@ static bool check_sd_raw_read() {
 	sd_logln("Checking sd raw read...");
 
 	static uint8_t block[512] __attribute__((aligned(32)));
+	uint32_t wait_start = osKernelGetTickCount();
 
 	HAL_StatusTypeDef res = HAL_SD_ReadBlocks(sdcard, block, 0, 1, 1000);
 
@@ -792,8 +827,14 @@ static bool check_sd_raw_read() {
 		return false;
 	}
 
-	while (HAL_SD_GetCardState(sdcard) != HAL_SD_CARD_TRANSFER)
+	while (HAL_SD_GetCardState(sdcard) != HAL_SD_CARD_TRANSFER) {
+		if ((osKernelGetTickCount() - wait_start) > SD_RAW_READ_WAIT_TIMEOUT_MS) {
+			sd_logln("Timed out waiting for SD card transfer state");
+			return false;
+		}
+
 		osDelay(1);
+	}
 
 	return true;
 }

@@ -119,6 +119,15 @@ void CAN_Task_Init(can_driver_state_t *init_state) {
 	init_state->rx_len = 0;
 	init_state->rx_can_id = 0;
 	init_state->can_error_code = 0;
+	init_state->tx_header.Identifier = 0U;
+	init_state->tx_header.IdType = FDCAN_STANDARD_ID;
+	init_state->tx_header.TxFrameType = FDCAN_DATA_FRAME;
+	init_state->tx_header.DataLength = FDCAN_DLC_BYTES_0;
+	init_state->tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+	init_state->tx_header.BitRateSwitch = FDCAN_BRS_OFF;
+	init_state->tx_header.FDFormat = FDCAN_CLASSIC_CAN;
+	init_state->tx_header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+	init_state->tx_header.MessageMarker = 0U;
 
 	if (init_state->can_rx_sem == NULL) {
 		init_state->can_rx_sem = osSemaphoreNew(1, 0, NULL);

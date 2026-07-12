@@ -285,8 +285,8 @@ static void uart_rx_process_bytes(uart_driver_state_t *uart_state,
 	for (size_t i = 0; i < len; ++i) {
 		char ch = (char) data[i];
 
-		/* Add byte to line buffer if there's space */
-		if (uart_state->rx_line_len < RX_LINE_MAX_LEN) {
+		/* Add byte to line buffer if there's space for both data and terminator */
+		if (uart_state->rx_line_len < (RX_LINE_MAX_LEN - 1U)) {
 			uart_state->rx_line_buf[uart_state->rx_line_len++] = ch;
 		}
 
@@ -376,6 +376,14 @@ static void uart_handle_error(uart_driver_state_t *uart_state) {
 	__HAL_UART_CLEAR_NEFLAG(uart_state->huart);
 	__HAL_UART_CLEAR_OREFLAG(uart_state->huart);
 
+	// Reset UART driver state */
+	uart_state->uart_err = 0;
+	uart_state->rx_ready = false;
+	uart_state->rx_size = 0;
+	uart_state->rx_line_len = 0;
+	uart_state->dma_old_pos = 0;
+	memset(uart_state->rx_line_buf, 0, sizeof(uart_state->rx_line_buf));
+
 	/* Stop any ongoing UART receive operation */
 	if (HAL_UART_AbortReceive(uart_state->huart) != HAL_OK) {
 		uart_logger_add_msg(LOG_RESET_FAIL, 0);
@@ -387,9 +395,6 @@ static void uart_handle_error(uart_driver_state_t *uart_state) {
 		uart_logger_add_msg(LOG_RESET_FAIL, 0);
 		return;
 	}
-
-	/* Clear error state */
-	uart_state->uart_err = 0;
 
 	/* Log successful reset */
 	uart_logger_add_msg(LOG_RESET_OK, 0);

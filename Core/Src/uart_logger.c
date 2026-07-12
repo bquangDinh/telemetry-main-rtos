@@ -45,6 +45,9 @@ static osThreadId_t uartLoggerTaskHandler;
 
 static const osThreadAttr_t uartLoggerTaskAttr = { .name = "uartLoggerTask",
 		.stack_size = 1024 * 4, .priority = (osPriority_t) osPriorityLow };
+		
+/* Maximum time to wait for a DMA transfer completion callback */
+#define UART_LOGGER_DMA_TX_TIMEOUT_MS 1000U
 
 #if USE_UART_INTERFACE
 static void uart_print(const log_msg_t *msg);
@@ -130,8 +133,8 @@ bool uart_logger_add_msg(const char *msg, size_t len) {
 
 	// Get the head slot and populate it
 	log_msg_t *slot = &uart_logger_queue.buffer[uart_logger_queue.head];
-	strncpy(slot->msg, msg, MSG_MAX_LEN - 1);
-	slot->msg[MSG_MAX_LEN - 1] = '\0';  // Ensure null termination
+	memcpy(slot->msg, msg, len);
+	slot->msg[len] = '\0';  // Ensure null termination
 	slot->len = len;
 
 	// Update queue state
@@ -164,9 +167,12 @@ bool uart_logger_add_msg_format(const char *fmt, ...) {
 	if (len < 0 || len >= (int)sizeof(msg)) {
 		return false;
 	}
-#endif
 
 	return uart_logger_add_msg(msg, (size_t)len);
+#else
+	(void)fmt;
+	return true;
+#endif
 }
 
 void UART_LOGGER_dma_tx_cplt_callback() {
@@ -206,7 +212,13 @@ static void UART_LOGGER_Task(void *argument) {
 		// Attempt DMA transmission
 		if (print_dma(&msg)) {
 			// Wait for DMA to complete
-			osSemaphoreAcquire(uart_logger_queue.dma_tx_done, osWaitForever);
+			if (osSemaphoreAcquire(uart_logger_queue.dma_tx_done,
+					UART_LOGGER_DMA_TX_TIMEOUT_MS) != osOK) {
+				uart_logger_queue.dma_busy = false;
+#if USE_UART_INTERFACE
+				(void) HAL_UART_AbortTransmit(UART_LOGGER_INSTANCE);
+#endif
+			}
 		} else {
 			// Fall back to blocking transmission
 			print(&msg);
