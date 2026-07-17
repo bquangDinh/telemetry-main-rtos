@@ -18,6 +18,8 @@
 #define WATCHDOG_ERR_LED_PORT GPIOB
 #define WATCHDOG_ERR_LED_PIN GPIO_PIN_5
 
+#define ERROR_BLINK_DURATION_MS 30000 // 30 seconds to blink error led before system reset
+
 static void WATCHDOG_Task(void *argument);
 
 static osThreadId_t watchdogTaskHandler;
@@ -38,9 +40,11 @@ static uint8_t is_wifi_ok();
 
 static uint8_t is_cellular_ok();
 
-static uint8_t is_sd_card_ok();
+// static uint8_t is_sd_card_ok();
 
 static void blink_green_led();
+
+static void blink_red_led();
 
 void WATCHDOG_Task_Init(IWDG_HandleTypeDef* _watchdog_timer) {
 	watchdog_timer = _watchdog_timer;
@@ -51,20 +55,38 @@ void WATCHDOG_Task_Init(IWDG_HandleTypeDef* _watchdog_timer) {
 static void WATCHDOG_Task(void *argument) {
 	uint8_t wifi_ok = 0;
 	uint8_t cellular_ok = 0;
-	uint8_t sd_card_ok = 0;
+	
+	uint32_t error_blink_start_time = 0;
 
 	while (1) {
 		wifi_ok = is_wifi_ok();
 
 		cellular_ok = is_cellular_ok();
 
-		sd_card_ok = is_sd_card_ok();
+		// sd_card_ok = is_sd_card_ok();
 
-		if (wifi_ok && cellular_ok && sd_card_ok) {
+		if (wifi_ok && cellular_ok) {
 			blink_green_led();
-		}
 
-		HAL_IWDG_Refresh(watchdog_timer);
+			// Reset timer
+			error_blink_start_time = 0;
+
+			HAL_IWDG_Refresh(watchdog_timer);
+		} else {
+			blink_red_led();
+
+			// Start the timer
+			if (error_blink_start_time == 0) {
+				error_blink_start_time = osKernelGetTickCount();
+			} else {
+				// Check if the error blink duration has elapsed
+				if ((osKernelGetTickCount() - error_blink_start_time)
+						< ERROR_BLINK_DURATION_MS) {
+					// Keep refreshing the watchdog timer to prevent reset
+					HAL_IWDG_Refresh(watchdog_timer);
+				}
+			}
+		}
 
 		osDelay(100);
 	}
@@ -133,11 +155,11 @@ static uint8_t is_cellular_ok() {
 	return cellular_ok;
 }
 
-static uint8_t is_sd_card_ok() {
-	uint32_t now = osKernelGetTickCount();
+// static uint8_t is_sd_card_ok() {
+// 	uint32_t now = osKernelGetTickCount();
 
-	return now - sdcard_health_state.last_progress <= 1500;
-}
+// 	return now - sdcard_health_state.last_progress <= 1500;
+// }
 
 static void blink_green_led() {
 	HAL_GPIO_WritePin(WATCHDOG_LED_PORT, WATCHDOG_LED_PIN, GPIO_PIN_SET);
@@ -149,4 +171,16 @@ static void blink_green_led() {
 	osDelay(100);
 
 	HAL_GPIO_WritePin(WATCHDOG_LED_PORT, WATCHDOG_LED_PIN, GPIO_PIN_SET);
+}
+
+static void blink_red_led() {
+	HAL_GPIO_WritePin(WATCHDOG_ERR_LED_PORT, WATCHDOG_ERR_LED_PIN, GPIO_PIN_SET);
+
+	osDelay(100);
+
+	HAL_GPIO_WritePin(WATCHDOG_ERR_LED_PORT, WATCHDOG_ERR_LED_PIN, GPIO_PIN_RESET);
+
+	osDelay(100);
+
+	HAL_GPIO_WritePin(WATCHDOG_ERR_LED_PORT, WATCHDOG_ERR_LED_PIN, GPIO_PIN_SET);
 }

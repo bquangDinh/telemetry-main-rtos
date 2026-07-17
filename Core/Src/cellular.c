@@ -74,11 +74,29 @@ typedef struct {
 // Puts the Notecard in DFU mode for IAP host MCU firmware updates. This mode is effectively the same as off in terms of the Notecard's network and Notehub connections.
 #define CELLULAR_BLUES_HUB_MODE_DFU "dfu"
 
+// Send data every 10 seconds
+#define CELLULAR_SYNC_INTERVAL_MS 10000U
+
+#define CELLULAR_WAIT_READY_TIMEOUT_MS 10000U
+
+typedef enum {
+	ERR_NONE,
+	ERR_WAIT_READY,
+	ERR_RESET,
+	ERR_CONFIGURED,
+	ERR_READY,
+	ERR_HUB_CONNECTED,
+	ERR_TRANSMIT,
+	ERR_DISABLE,
+} cellular_error_t;
+
 static void CELLULAR_Task(void *argument);
 
 static osThreadId_t cellularTaskHandler;
 
 static osSemaphoreId_t cellular_rx_sem;
+
+static osSemaphoreId_t cellular_attn_sem;
 
 static osSemaphoreId_t cellular_disabled_sem;
 
@@ -89,13 +107,15 @@ static uart_driver_state_t blues_uart_driver_state = { 0 };
 
 static CellularState_t cellular_state = CELLULAR_STATE_WAIT_READY;
 
-static bool cellular_hub_connected = false;
-
 static bool acquired_hub_connection_status = false;
 
 static cellular_queue_t cellular_payload_queue;
 
 static volatile uint8_t current_retry_count = 0;
+
+static uint32_t last_sync_time_ms = 0;
+
+static cellular_error_t last_error_code = ERR_NONE;
 
 volatile cellular_health_state_t cellular_health_state = { .last_progress = 0,
 		.wait_start = 0, .current_state = CELLULAR_STATE_WAIT_READY };
@@ -126,6 +146,11 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
  * @return true if a payload was successfully popped from the queue and stored in the output parameter, false if the queue is empty and no payload was retrieved.
  */
 static bool cellular_payload_pop(cellular_payload_t *out);
+
+/**
+ * @brief Signal the NoteCard to send all pending data immediately
+ */
+static bool cellular_force_sync_with_note_card();
 
 /**
  * Logging functions
@@ -172,13 +197,36 @@ void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 	blues_uart_driver_state.rx_line_callback = uart_rx_line_callback_handler;
 
 	cellular_payload_queue.mutex = osMutexNew(NULL);
+
+	if (cellular_payload_queue.mutex == NULL) {
+		cellular_log("Failed to allocate memory for mutex");
+		return;
+	}
+
 	cellular_payload_queue.items = osSemaphoreNew(
 	CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
 
+	if (cellular_payload_queue.items == NULL) {
+		cellular_log("Failed to allocate memory for semaphore");
+		return;
+	}
+
 	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
+	cellular_attn_sem = osSemaphoreNew(1, 0, NULL);
 	cellular_disabled_sem = osSemaphoreNew(1, 0, NULL);
 
+	if (cellular_rx_sem == NULL || cellular_attn_sem == NULL
+			|| cellular_disabled_sem == NULL) {
+		cellular_log("Failed to allocate memory for semaphore");
+		return;
+	}
+
 	cellularTaskHandler = osThreadNew(CELLULAR_Task, NULL, &cellularTaskAttr);
+
+	if (cellularTaskHandler == NULL) {
+		cellular_log("Failed to create cellular task");
+		return;
+	}
 }
 
 /**
@@ -212,16 +260,9 @@ void CELLULAR_blues_uart_error_callback() {
  * @brief Handle the ATTN signal from the NoteCard and advance the cellular state.
  */
 void CELLULAR_ATTN_callback() {
-	// Since ATTN should be set up to fire up when NoteCard's hub is connected successfully
-	// worth to mention that ATTN could fire up if other events occurred if configured
-	cellular_hub_connected = true;
-
-	// Just to make sure the Blue Note Card has passed the configuration stage as this event could be fired sooner due to prior mis-configuration
 	if (cellular_state == CELLULAR_STATE_CONFIGURED) {
-		cellular_state = CELLULAR_STATE_HUB_CONNECTED;
+		osSemaphoreRelease(cellular_attn_sem);
 	} else if (cellular_state == CELLULAR_STATE_DISABLED) {
-		// In case the module has been disabled due to number of retries reached
-		// This one signal could wake the module back up and init again
 		osSemaphoreRelease(cellular_disabled_sem);
 	}
 }
@@ -231,7 +272,7 @@ void CELLULAR_ATTN_callback() {
  */
 bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t *data,
 		uint16_t len) {
-	if (id == 0 || data == NULL || len == 0)
+	if (data == NULL || len == 0)
 		return false;
 
 	osMutexAcquire(cellular_payload_queue.mutex, osWaitForever);
@@ -245,11 +286,13 @@ bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t *data,
 	cellular_payload_t *slot =
 			&cellular_payload_queue.buffer[cellular_payload_queue.head];
 
-	if (len >= CELLULAR_MAX_DATA_LEN) {
-		len = CELLULAR_MAX_DATA_LEN - 1;
+	if (len > CELLULAR_MAX_DATA_LEN) {
+		len = CELLULAR_MAX_DATA_LEN;
 	}
 
 	slot->len = len;
+
+	slot->id = id;
 
 	memset(slot->payload, 0, CELLULAR_MAX_DATA_LEN);
 
@@ -291,7 +334,7 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
 	// Start JSON
 	offset +=
 			snprintf(&buffer[offset], sizeof(buffer) - offset,
-					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"sync\":true,\"body\":{");
+					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"body\":{");
 
 	if (offset < 0 || offset >= (int) sizeof(buffer)) {
 		cellular_log("Failed to build Note JSON: Buffer overflow at JSON start");
@@ -328,7 +371,7 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
 	}
 
 	offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
-			"\",\"len\":%lu}}\n", (unsigned long) len);
+			"\",\"len\":%lu}}\r\n", (unsigned long) len);
 
 	if (offset < 0 || offset >= (int) sizeof(buffer)) {
 		cellular_log("Failed to build Note JSON: Buffer overflow while writing payload");
@@ -344,6 +387,16 @@ bool CELLULAR_transmit_data(const uint32_t id, const uint8_t *data, size_t len,
  * @brief Main cellular task that drives the NoteCard state machine.
  */
 static void CELLULAR_Task(void *argument) {
+	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_SET);
+
+	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_SET);
+
+	osDelay(1000);
+
+	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_RESET);
+
+	HAL_GPIO_WritePin(CELL_ERR_LED_PORT, CELL_ERR_LED_PIN, GPIO_PIN_RESET);
+
 	cellular_log("Initializing blues note card uart driver...");
 
 	blues_uart_driver_state.controller_rx_sem = cellular_rx_sem;
@@ -363,6 +416,8 @@ static void CELLULAR_Task(void *argument) {
 			if (cellular_handle_wait_ready()) {
 				cellular_state = CELLULAR_STATE_RESET;
 			} else {
+				last_error_code = ERR_WAIT_READY;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
@@ -370,39 +425,55 @@ static void CELLULAR_Task(void *argument) {
 			if (cellular_handle_reset()) {
 				cellular_state = CELLULAR_STATE_READY;
 			} else {
+				last_error_code = ERR_RESET;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
 		case CELLULAR_STATE_READY:
 			if (cellular_handle_ready()) {
-				// The hub connected event could be caught earlier due to mis-configuration prior to this step
-				// So this variable is used to remember that the hub is connected already
-				if (cellular_hub_connected) {
-					cellular_state = CELLULAR_STATE_HUB_CONNECTED;
-				} else {
-					cellular_state = CELLULAR_STATE_CONFIGURED;
-				}
+				cellular_state = CELLULAR_STATE_CONFIGURED;
 			} else {
+				last_error_code = ERR_READY;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
 		case CELLULAR_STATE_CONFIGURED:
-			// Nothing to do here as the hub connection event will be caught by interrupt
+			// Wait for ATTN event
+			if (osSemaphoreAcquire(cellular_attn_sem, osWaitForever) == osOK) {
+				cellular_state = CELLULAR_STATE_HUB_CONNECTED;
+			} else {
+				last_error_code = ERR_CONFIGURED;
+
+				cellular_state = CELLULAR_STATE_ERROR;
+			}
 			break;
 		case CELLULAR_STATE_HUB_CONNECTED:
 			if (cellular_handle_hub_connected()) {
+				// The module is fully recovered, so reset it here
+				current_retry_count = 0;
+
 				cellular_state = CELLULAR_STATE_READY_TO_TRANSMIT;
 			} else {
+				last_error_code = ERR_HUB_CONNECTED;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
 		case CELLULAR_STATE_READY_TO_TRANSMIT:
 			if (!cellular_handle_transmit()) {
+				last_error_code = ERR_TRANSMIT;
+
 				cellular_state = CELLULAR_STATE_ERROR;
 			}
 			break;
 		case CELLULAR_STATE_DISABLED:
-			cellular_handle_disable();
+			if (!cellular_handle_disable()) {
+				last_error_code = ERR_DISABLE;
+
+				cellular_state = CELLULAR_STATE_ERROR;
+			}
 
 			break;
 		case CELLULAR_STATE_ERROR:
@@ -450,9 +521,12 @@ static bool cellular_handle_reset() {
  * @brief Wait for the NoteCard to become ready after startup or reset.
  */
 static bool cellular_handle_wait_ready() {
-	cellular_log("Wait for Blues Note Card to be ready for 3 seconds...");
+	last_error_code = 0;
 
-	osDelay(3000);
+	cellular_log_fmt("Waiting for NoteCard to become ready (timeout: %d ms)...",
+			CELLULAR_WAIT_READY_TIMEOUT_MS);
+	
+	osDelay(CELLULAR_WAIT_READY_TIMEOUT_MS);
 
 	cellular_log("Ready");
 
@@ -586,22 +660,39 @@ static bool cellular_handle_hub_connected() {
 static bool cellular_handle_transmit() {
 	cellular_payload_t payload;
 
-	// Ping the cellular module to check if it's still ON
-	if (!cellular_send_cmd_and_wait_respond(
-			CELLULAR_ACQUIRE_HUB_STATUS, 1000)) {
-				return false;
-			}
+//	// Ping the cellular module to check if it's still ON
+//	if (!cellular_send_cmd_and_wait_respond(
+//			CELLULAR_ACQUIRE_HUB_STATUS, 1000)) {
+//				return false;
+//			}
 
 	// Wait for items
-	osSemaphoreAcquire(cellular_payload_queue.items, 1000);
+	osSemaphoreAcquire(cellular_payload_queue.items, osWaitForever);
 
-	if (cellular_payload_pop(&payload)) {
+	while (cellular_payload_pop(&payload)) {
 		cellular_log("Data is available!");
 
 		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
 				payload.len, 3000);
 
-		return ret;
+		if (!ret) {
+			last_error_code = 6;
+
+			return false;
+		}
+
+		// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
+		if (HAL_GetTick() - last_sync_time_ms > CELLULAR_SYNC_INTERVAL_MS) {
+			bool ret_sync = cellular_force_sync_with_note_card();
+
+			if (ret_sync) {
+				last_sync_time_ms = HAL_GetTick();	
+			} else {
+				last_error_code = 7;
+
+				return false;
+			}
+		}
 	}
 
 	return true;
@@ -611,11 +702,11 @@ static bool cellular_handle_transmit() {
  * @brief Park the cellular module until it is explicitly re-enabled.
  */
 static bool cellular_handle_disable() {
-	if (osSemaphoreAcquire(cellular_disabled_sem, 1000) == osOK) {
-		cellular_state = CELLULAR_STATE_WAIT_READY;
-
-		current_retry_count = 0;
+	if (osSemaphoreAcquire(cellular_disabled_sem, osWaitForever) != osOK) {
+		return false;
 	}
+
+	cellular_state = CELLULAR_STATE_WAIT_READY;
 
 	return true;
 }
@@ -624,11 +715,9 @@ static bool cellular_handle_disable() {
  * @brief Handle the error state by resetting flags, updating LEDs, and delaying retry.
  */
 static bool cellular_handle_error() {
-	cellular_log("AN ERROR HAS OCCURED!");
+	cellular_log_fmt("AN ERROR HAS OCCURED | Code: %u", last_error_code);
 
 	acquired_hub_connection_status = false;
-
-	cellular_hub_connected = false;
 
 	HAL_GPIO_WritePin(CELL_HEALTH_LED_PORT, CELL_HEALTH_LED_PIN, GPIO_PIN_RESET);
 
@@ -660,8 +749,14 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 
 	va_list args;
 	va_start(args, timeout);
-	vsnprintf(buf, sizeof(buf), fmt, args);
+	int len = vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
+
+	if (len < 0 || len >= (int)sizeof(buf)) {
+		cellular_log("Invalid CMD -- truncated");
+
+		return false;
+	}
 
 	// Send data into the uart interface that connects to blues
 	bool ret = uart_send_data(&blues_uart_driver_state, buf);
@@ -706,6 +801,21 @@ static bool cellular_payload_pop(cellular_payload_t *out) {
 	cellular_payload_queue.count--;
 
 	osMutexRelease(cellular_payload_queue.mutex);
+
+	return true;
+}
+
+static bool cellular_force_sync_with_note_card() {
+	cellular_log("Forcing sync with NoteCard...");
+
+	if (!cellular_send_cmd_and_wait_respond(
+	CELLULAR_HUB_FORCE_SYNC, 1000)) {
+		cellular_log("Failed to force sync with NoteCard");
+		
+		return false;
+	}
+
+	cellular_log("Successfully forced sync with NoteCard");
 
 	return true;
 }

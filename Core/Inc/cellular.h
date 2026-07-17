@@ -22,7 +22,7 @@
  * @brief Product ID for the Blue Note Card
  * This should be set to the product ID of your NoteCard, which can be found in the NoteCard's dashboard on the Blues website. The product ID is used to identify your NoteCard when it connects to the Blues cloud and is required for proper operation of the cellular module.
  */
-#define CELLULAR_BLUES_PRODUCT_ID "com.gmail.rusolarcarclub:rsctest"
+#define CELLULAR_BLUES_PRODUCT_ID "com.gmail.buiquangdinh1751:rsctelemetry"
 
 /*
  * @brief Serial number for the Blue Note Card
@@ -36,7 +36,8 @@
  * When outbound data is enabled, the cellular module will be able to send data to the NoteCard, which can then be forwarded to the Blues cloud for processing and storage. This is typically used for sending telemetry data, sensor readings, or other information from your application to the NoteCard and the Blues cloud.
  * If outbound data is disabled, the cellular module will not be able to send data to the NoteCard, and the NoteCard will not receive any data from your application. This may be useful in certain scenarios where you only want to receive data from the NoteCard (e.g., commands, configuration updates, etc.) and do not need to send any data to the NoteCard.
  */
-#define CELLULAR_BLUES_OUTBOUND 1
+// Since we will manually trigger the data transmission to the NoteCard, we can set this one to 0 as we won't need the NoteCard to accept unsolicited data from the cellular module
+#define CELLULAR_BLUES_OUTBOUND 0
 
 /*
  * @brief Inbound data configuration for the Blue Note Card
@@ -44,7 +45,7 @@
  * When inbound data is enabled, the cellular module will be able to receive data from the NoteCard, which can then be forwarded to the Blues cloud for processing and storage. This is typically used for receiving commands, configuration updates, or other information from the NoteCard and the Blues cloud.
  * If inbound data is disabled, the cellular module will not be able to receive data from the NoteCard, and the NoteCard will not be able to send any data to your application. This may be useful in certain scenarios where you only want to send data to the NoteCard (e.g., telemetry data, sensor readings, etc.) and do not need to receive any data from the NoteCard.
  */
-#define CELLULAR_BLUES_INBOUND -1
+#define CELLULAR_BLUES_INBOUND 0
 
 /**
  * @brief UART instance and GPIO definitions for the Blue Note Card

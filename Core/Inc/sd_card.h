@@ -74,4 +74,5 @@ void SDCARD_Task_Init(SD_HandleTypeDef* sdcard_instace);
  */
 bool SDCARD_add_payload_to_queue(const char* message, const uint16_t len);
 
+bool SDCARD_add_can_message_to_queue(const uint32_t id, const uint8_t *data, uint16_t len);
 #endif /* INC_SD_CARD_H_ */

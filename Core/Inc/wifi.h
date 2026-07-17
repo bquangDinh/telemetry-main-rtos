@@ -30,7 +30,7 @@
 /**
  * @brief Number of retries for transmitting a payload to the WiFi module before giving up and going into error state. This should be set according to the expected reliability of the WiFi connection and your application's requirements.
  */
-#define WIFI_PAYLOAD_TRANSMIT_RETRIES 3
+#define WIFI_PAYLOAD_TRANSMIT_RETRIES 1
 
 /**
  * @brief ESP32 UART configuration values. These defines specify the UART instance and handle for communicating with the ESP32 WiFi module.
@@ -44,18 +44,43 @@
 
 #define WIFI_SSID "Olympus"
 #define WIFI_PASSWORD "Giveme5$"
-#define HOST_IP "192.168.86.22"
+#define HOST_IP "192.168.86.39"
 #define HOST_PORT 8080
 
 /**
  * @brief Maximum length of data that can be sent via WiFi, which should be set according to the maximum data length supported by the WiFi module and your application's requirements.
  */
-#define WIFI_MAX_DATA_LEN 64
+#define WIFI_MAX_DATA_LEN 128
 
 /**
  * @brief WiFi payload queue configuration. This define specifies the maximum capacity of the queue used to store outgoing payloads that are waiting to be transmitted to the WiFi module. The queue will be used to manage the flow of outgoing data and ensure that it is transmitted in a timely manner, while also preventing overflow and managing memory usage effectively.
  */
 #define WIFI_PAYLOAD_QUEUE_MAX_CAPACITY 20
+
+/**
+ * @brief Enable or disable static IP configuration for the WiFi module. When enabled, the WiFi module will use a static IP address instead of obtaining an IP address via DHCP. This can be useful in scenarios where a fixed IP address is required for communication with other devices on the network.
+ */
+#define WIFI_ENABLE_STATIC_IP 1
+
+/**
+ * @brief Static IP configuration values for the WiFi module. These defines specify the static IP address and gateway to be used when static IP configuration is enabled.
+ */
+#define WIFI_STATIC_IP "192.168.86.100"
+
+/**
+ * @brief Static gateway configuration value for the WiFi module. This define specifies the gateway to be used when static IP configuration is enabled, which is typically the IP address of the router or access point that provides network connectivity.
+ */
+#define WIFI_STATIC_GATEWAY "192.168.86.1"
+
+/**
+ * @brief Static netmask configuration value for the WiFi module. This define specifies the netmask to be used when static IP configuration is enabled, which is typically set to
+ */
+#define WIFI_STATIC_NETMASK "255.255.255.0"
+
+/**
+ * @brief Enable or disable WiFi logging. When enabled, the WiFi module will log detailed information about its operations, which can be useful for troubleshooting and development. When disabled, the WiFi module will operate without logging this information, which can help reduce overhead and improve performance in production environments.
+ */
+#define WIFI_LOG_ENABLED 1
 
 /**
  * @brief Enumerated type for the states of the WiFi module. This enum defines the possible states that the WiFi module can be in, which can be used to manage the state of the WiFi connection and handle different scenarios (e.g., waiting for ready, connecting to AP, connected, error, etc.).
