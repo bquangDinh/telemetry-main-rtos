@@ -14,27 +14,9 @@
 #include "cmsis_os.h"
 #include "uart_logger.h"
 #include "uart_driver.h"
+#include "can_storage.h"
 
-/**
- * @brief Payload structure for cellular messages, which includes the CAN ID, payload data, and length of the payload. This structure will be used to represent the messages received from the CAN interface that are intended for processing by the cellular module, allowing for organized storage and management of the incoming data.
- */
-typedef struct {
-	uint32_t id;
-	uint8_t payload[CELLULAR_MAX_DATA_LEN];
-	uint8_t len;
-} cellular_payload_t;
-
-/**
- * @brief Queue structure for managing incoming cellular payloads, which includes a buffer for storing the payloads, indices for the head and tail of the queue, a count of the number of items in the queue, and synchronization primitives (mutex and semaphore) for managing access to the queue in a thread-safe manner. This structure will be used by the cellular task to manage the flow of incoming messages and ensure that they are processed in a timely manner while preventing overflow and managing memory usage effectively.
- */
-typedef struct {
-	cellular_payload_t buffer[CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY];
-	uint16_t tail;
-	uint16_t head;
-	uint16_t count;
-	osMutexId_t mutex;
-	osSemaphoreId_t items;
-} cellular_queue_t;
+#define BULK_BUFFER_SIZE 2048
 
 #define CELL_HEALTH_LED_PIN GPIO_PIN_4
 #define CELL_HEALTH_LED_PORT GPIOD
@@ -90,6 +72,15 @@ typedef enum {
 	ERR_DISABLE,
 } cellular_error_t;
 
+/**
+ * @brief Payload structure for cellular messages, which includes the CAN ID, payload data, and length of the payload. This structure will be used to represent the messages received from the CAN interface that are intended for processing by the cellular module, allowing for organized storage and management of the incoming data.
+ */
+typedef struct {
+	uint32_t id;
+	uint8_t payload[CELLULAR_MAX_DATA_LEN];
+	uint8_t len;
+} cellular_payload_t;
+
 static void CELLULAR_Task(void *argument);
 
 static osThreadId_t cellularTaskHandler;
@@ -108,8 +99,6 @@ static uart_driver_state_t blues_uart_driver_state = { 0 };
 static CellularState_t cellular_state = CELLULAR_STATE_WAIT_READY;
 
 static bool acquired_hub_connection_status = false;
-
-static cellular_queue_t cellular_payload_queue;
 
 static volatile uint8_t current_retry_count = 0;
 
@@ -130,6 +119,8 @@ static bool cellular_handle_transmit();
 static bool cellular_handle_disable();
 static bool cellular_handle_error();
 
+static bool cellular_send_bulk_data();
+
 /**
  * @brief Helper function to send a formatted command to the NoteCard and wait for a response. This function will format the command string using the provided format and arguments, send it to the NoteCard via the cellular UART driver, and then wait for a response within the specified timeout period. The function will return true if a response is received within the timeout, or false if there is an error or if the timeout is reached without receiving a response.
  * @param fmt The format string for the command to be sent, which can include format specifiers for additional arguments.
@@ -139,13 +130,6 @@ static bool cellular_handle_error();
  */
 static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 		const uint16_t timeout, ...);
-
-/**
- * @brief Helper function to pop a payload from the cellular payload queue for processing. This function will check if there are any items in the queue, and if so, it will acquire the mutex to safely access the queue, retrieve the next payload, update the queue indices and count, release the mutex, and return true. If there are no items in the queue, the function will return false without modifying the output parameter.
- * @param out A pointer to a cellular_payload_t structure where the popped payload will be stored if the operation is successful. The caller should provide a valid pointer to receive the payload data.
- * @return true if a payload was successfully popped from the queue and stored in the output parameter, false if the queue is empty and no payload was retrieved.
- */
-static bool cellular_payload_pop(cellular_payload_t *out);
 
 /**
  * @brief Signal the NoteCard to send all pending data immediately
@@ -195,21 +179,6 @@ void CELLULAR_Task_Init(UART_HandleTypeDef *blues_uart_interface) {
 
 	blues_uart_driver_state.huart = blues_uart_interface;
 	blues_uart_driver_state.rx_line_callback = uart_rx_line_callback_handler;
-
-	cellular_payload_queue.mutex = osMutexNew(NULL);
-
-	if (cellular_payload_queue.mutex == NULL) {
-		cellular_log("Failed to allocate memory for mutex");
-		return;
-	}
-
-	cellular_payload_queue.items = osSemaphoreNew(
-	CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY, 0, NULL);
-
-	if (cellular_payload_queue.items == NULL) {
-		cellular_log("Failed to allocate memory for semaphore");
-		return;
-	}
 
 	cellular_rx_sem = osSemaphoreNew(1, 0, NULL);
 	cellular_attn_sem = osSemaphoreNew(1, 0, NULL);
@@ -265,50 +234,6 @@ void CELLULAR_ATTN_callback() {
 	} else if (cellular_state == CELLULAR_STATE_DISABLED) {
 		osSemaphoreRelease(cellular_disabled_sem);
 	}
-}
-
-/**
- * @brief Queue a payload for later transmission to the NoteCard.
- */
-bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t *data,
-		uint16_t len) {
-	if (data == NULL || len == 0)
-		return false;
-
-	osMutexAcquire(cellular_payload_queue.mutex, osWaitForever);
-
-	if (cellular_payload_queue.count >= CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY) {
-		osMutexRelease(cellular_payload_queue.mutex);
-
-		return false;
-	}
-
-	cellular_payload_t *slot =
-			&cellular_payload_queue.buffer[cellular_payload_queue.head];
-
-	if (len > CELLULAR_MAX_DATA_LEN) {
-		len = CELLULAR_MAX_DATA_LEN;
-	}
-
-	slot->len = len;
-
-	slot->id = id;
-
-	memset(slot->payload, 0, CELLULAR_MAX_DATA_LEN);
-
-	memcpy(slot->payload, data, len);
-
-	cellular_payload_queue.head = (cellular_payload_queue.head + 1)
-			% CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY;
-
-	cellular_payload_queue.count++;
-
-	osMutexRelease(cellular_payload_queue.mutex);
-
-	// Signal that there is item to consume
-	osSemaphoreRelease(cellular_payload_queue.items);
-
-	return true;
 }
 
 /**
@@ -525,7 +450,7 @@ static bool cellular_handle_wait_ready() {
 
 	cellular_log_fmt("Waiting for NoteCard to become ready (timeout: %d ms)...",
 			CELLULAR_WAIT_READY_TIMEOUT_MS);
-	
+
 	osDelay(CELLULAR_WAIT_READY_TIMEOUT_MS);
 
 	cellular_log("Ready");
@@ -658,42 +583,23 @@ static bool cellular_handle_hub_connected() {
  * @brief Keep the NoteCard alive and transmit queued payloads when available.
  */
 static bool cellular_handle_transmit() {
-	cellular_payload_t payload;
+	// Send all data in the can storage
+	if (!cellular_send_bulk_data()) {
+		return false;
+	}
 
-//	// Ping the cellular module to check if it's still ON
-//	if (!cellular_send_cmd_and_wait_respond(
-//			CELLULAR_ACQUIRE_HUB_STATUS, 1000)) {
-//				return false;
-//			}
-
-	// Wait for items
-	osSemaphoreAcquire(cellular_payload_queue.items, osWaitForever);
-
-	while (cellular_payload_pop(&payload)) {
-		cellular_log("Data is available!");
-
-		bool ret = CELLULAR_transmit_data(payload.id, payload.payload,
-				payload.len, 3000);
-
-		if (!ret) {
-			last_error_code = 6;
-
-			return false;
-		}
-
-		// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
+	// Check if it's time to sync with the NoteCard to send the data immediately instead of waiting for the next periodic sync
 		if (HAL_GetTick() - last_sync_time_ms > CELLULAR_SYNC_INTERVAL_MS) {
 			bool ret_sync = cellular_force_sync_with_note_card();
 
 			if (ret_sync) {
-				last_sync_time_ms = HAL_GetTick();	
+				last_sync_time_ms = HAL_GetTick();
 			} else {
 				last_error_code = 7;
 
 				return false;
 			}
 		}
-	}
 
 	return true;
 }
@@ -780,42 +686,82 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 	return true;
 }
 
-/**
- * @brief Remove and return the next queued payload, if one is available.
- */
-static bool cellular_payload_pop(cellular_payload_t *out) {
-	if (out == NULL)
-		return false;
-
-	osMutexAcquire(cellular_payload_queue.mutex, osWaitForever);
-
-	if (cellular_payload_queue.count == 0) {
-		osMutexRelease(cellular_payload_queue.mutex);
-
-		return false;
-	}
-
-	*out = cellular_payload_queue.buffer[cellular_payload_queue.tail];
-	cellular_payload_queue.tail = (cellular_payload_queue.tail + 1)
-			% CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY;
-	cellular_payload_queue.count--;
-
-	osMutexRelease(cellular_payload_queue.mutex);
-
-	return true;
-}
-
 static bool cellular_force_sync_with_note_card() {
 	cellular_log("Forcing sync with NoteCard...");
 
 	if (!cellular_send_cmd_and_wait_respond(
 	CELLULAR_HUB_FORCE_SYNC, 1000)) {
 		cellular_log("Failed to force sync with NoteCard");
-		
+
 		return false;
 	}
 
 	cellular_log("Successfully forced sync with NoteCard");
 
 	return true;
+}
+
+static bool cellular_send_bulk_data() {
+	can_storage_t *can_storage = get_can_storage();
+
+	static char buffer[BULK_BUFFER_SIZE];
+
+	if (osMutexAcquire(can_storage->mutex, osWaitForever) != osOK) {
+		cellular_log("Failed to acquire CAN storage mutex");
+		return false;
+	}
+
+	int offset = 0;
+
+	memset(buffer, 0, BULK_BUFFER_SIZE);
+
+	// Start JSON
+	offset +=
+			snprintf(&buffer[offset], sizeof(buffer) - offset,
+					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"body\":{[");
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		cellular_log("Failed to build Note JSON: Buffer overflow at JSON start");
+		return false;
+	}
+
+	// Build JSON body
+	// Format: { "id": <id>, "payload": "<hex string>", "len": <len> }, ...
+	for (uint16_t i = 0; i < TABLE_SIZE; i++) {
+		can_msg_node_t *node = &can_storage->nodes[i];
+
+		if (node->valid) {
+			offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
+					"{\"id\":%lu,\"payload\":\"",
+					(unsigned long) node->key);
+
+			for (size_t j = 0; j < node->value.len; j++) {
+				offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
+						"%02X", node->value.payload[j]);
+			}
+
+			offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
+					"\",\"len\":%lu},",
+					(unsigned long) node->value.len);
+
+			if (offset >= (int) sizeof(buffer)) {
+				cellular_log("Buffer overflow while building bulk data payload");
+				osMutexRelease(can_storage->mutex);
+				return false;
+			}
+		}
+	}
+
+	// End JSON
+	offset += snprintf(&buffer[offset], sizeof(buffer) - offset, "]}\r\n");
+
+	if (offset < 0 || offset >= (int) sizeof(buffer)) {
+		cellular_log("Failed to build Note JSON: Buffer overflow at JSON end");
+		osMutexRelease(can_storage->mutex);
+		return false;
+	}
+
+	osMutexRelease(can_storage->mutex);
+
+	return cellular_send_cmd_and_wait_respond(buffer, 3000);
 }

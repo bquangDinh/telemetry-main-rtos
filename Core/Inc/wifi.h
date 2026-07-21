@@ -53,11 +53,6 @@
 #define WIFI_MAX_DATA_LEN 128
 
 /**
- * @brief WiFi payload queue configuration. This define specifies the maximum capacity of the queue used to store outgoing payloads that are waiting to be transmitted to the WiFi module. The queue will be used to manage the flow of outgoing data and ensure that it is transmitted in a timely manner, while also preventing overflow and managing memory usage effectively.
- */
-#define WIFI_PAYLOAD_QUEUE_MAX_CAPACITY 20
-
-/**
  * @brief Enable or disable static IP configuration for the WiFi module. When enabled, the WiFi module will use a static IP address instead of obtaining an IP address via DHCP. This can be useful in scenarios where a fixed IP address is required for communication with other devices on the network.
  */
 #define WIFI_ENABLE_STATIC_IP 1
@@ -134,16 +129,6 @@ void WIFI_esp32_uart_tx_callback();
  * @note This function should be called from the UART error interrupt handler when an error occurs during communication with the ESP32 WiFi module, and it should manage the state of the WiFi module accordingly and perform any necessary error handling or recovery.
  */
 void WIFI_esp32_uart_error_callback();
-
-/**
- * @brief Adds a payload to the WiFi transmission queue. This function takes a message type, an identifier, a pointer to the data, and the length of the data, and adds it to the queue for later transmission to the WiFi module. The function returns true if the payload was successfully added to the queue, or false if there was an error (e.g., queue full).
- * @param message_type The type of the message being added to the queue, which can be used to manage the different types of messages and handle them appropriately when they are transmitted to the WiFi module.
- * @param id Unique identifier for the payload, which can be used to manage and track the payloads in the queue and handle them appropriately when they are transmitted to the WiFi module.
- * @param data Pointer to the data buffer containing the payload, which will be transmitted to the WiFi module when the payload is processed from the queue.
- * @param len Length of the data in bytes, which can be used to manage the payload and ensure that it is transmitted correctly to the WiFi module.
- * @return true if the payload was successfully added to the queue, false otherwise.
- */
-bool WIFI_add_payload_to_queue(const wifi_message_type_t message_type, const uint32_t id, const uint8_t* data, uint16_t len);
 
 /**
  * @brief Transmits data to the WiFi module. This function takes a pointer to the data, the length of the data, and a timeout value, and attempts to transmit the data to the WiFi module within the specified timeout period. The function returns true if the data was successfully transmitted, or false if there was an error (e.g., transmission failed, timeout reached).

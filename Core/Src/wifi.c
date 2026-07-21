@@ -13,27 +13,8 @@
 #include "wifi.h"
 #include "uart_logger.h"
 #include "uart_driver.h"
-#include "utilities.h"
 #include "cmsis_os.h"
-
-typedef struct {
-	uint8_t message_type;
-	uint32_t id;
-	uint8_t len;
-	uint8_t payload[WIFI_MAX_DATA_LEN];
-} wifi_payload_t;
-
-typedef struct {
-	wifi_payload_t buffer[WIFI_PAYLOAD_QUEUE_MAX_CAPACITY];
-	wifi_payload_t pending_payload;
-	bool payload_processing;
-	uint8_t retries_count;
-	uint16_t tail;
-	uint16_t head;
-	uint16_t count;
-	osMutexId_t mutex;
-	osSemaphoreId_t items;
-} wifi_queue_t;
+#include "can_storage.h"
 
 #define WIFI_HEALTH_LED_PIN GPIO_PIN_1
 #define WIFI_HEALTH_LED_PORT GPIOD
@@ -91,6 +72,13 @@ static void wifi_log_fmt_ln_impl(const char *fmt, ...) {
 #define wifi_log_fmt(fmt, ...) ((void) wifi_log_fmt_ln_impl((fmt), ##__VA_ARGS__))
 #endif
 
+typedef struct {
+	uint8_t message_type;
+	uint32_t id;
+	uint8_t len;
+	uint8_t payload[WIFI_MAX_DATA_LEN];
+} wifi_payload_t;
+
 static void WIFI_Task(void *argument);
 
 static osThreadId_t wifiTaskHandler;
@@ -106,13 +94,11 @@ static uart_driver_state_t esp32_uart_driver_state = { 0 };
 
 static WifiState_t wifi_state = WIFI_STATE_RESET;
 
-static wifi_queue_t wifi_payload_queue;
-
 static char esp32_last_response[RX_LINE_MAX_LEN];
 
-static uint8_t current_retry_count = 0;
-
 static bool wifi_initialized = false;
+
+static uint8_t current_retry_count = 0;
 
 volatile wifi_health_state_t wifi_health_state = { .last_progress = 0,
 		.wait_start = 0, .current_state = WIFI_STATE_RESET };
@@ -123,7 +109,7 @@ static bool wifi_handle_join_ap();
 static bool wifi_handle_connected();
 static bool wifi_handle_disabled();
 static bool wifi_handle_error();
-static bool wifi_process_pending_payload(void);
+
 static void wifi_clear_rx_semaphore(void);
 static size_t wifi_terminal_line_length(const uint8_t *data, size_t len);
 static bool wifi_is_terminal_response(const uint8_t *line, size_t len);
@@ -136,16 +122,14 @@ static bool wifi_wait_for_response(const char *expected, uint16_t timeout);
 static bool wifi_cmd_expect(const char *expected, const uint16_t timeout,
 bool show_cmd, const char *fmt, ...);
 
-static bool wifi_payload_pop(wifi_payload_t *out);
-
 static void uart_rx_callback_handler(const uint8_t *data, size_t len);
 
 static void uart_rx_line_callback_handler(const uint8_t *data, size_t len);
 
-static void reset_queue();
-
 static bool wifi_send_raw_expect(const char *expected, const uint16_t timeout,
 		bool show, const char *data, size_t len);
+
+static bool wifi_send_all_can();
 
 void WIFI_Task_Init(UART_HandleTypeDef *esp32_uart_interface) {
 	wifi_initialized = false;
@@ -153,20 +137,6 @@ void WIFI_Task_Init(UART_HandleTypeDef *esp32_uart_interface) {
 	esp32_uart_driver_state.huart = esp32_uart_interface;
 	esp32_uart_driver_state.rx_line_callback = uart_rx_line_callback_handler;
 	esp32_uart_driver_state.rx_callback = uart_rx_callback_handler;
-
-	wifi_payload_queue.mutex = osMutexNew(NULL);
-	
-	if (wifi_payload_queue.mutex == NULL) {
-		wifi_log("Failed to create payload mutex\r\n");
-		return;
-	}
-
-	wifi_payload_queue.items = osSemaphoreNew(1, 0, NULL);
-
-	if (wifi_payload_queue.items == NULL) {
-		wifi_log("Failed to create payload queue semaphore\r\n");
-		return;
-	}
 
 	wifi_rx_sem = osSemaphoreNew(1, 0, NULL);
 	if (wifi_rx_sem == NULL) {
@@ -205,49 +175,6 @@ void WIFI_esp32_uart_error_callback() {
 	if (esp32_uart_driver_state.initialized) {
 		on_uart_err_callback(&esp32_uart_driver_state);
 	}
-}
-
-bool WIFI_add_payload_to_queue(const wifi_message_type_t message_type,
-		const uint32_t id, const uint8_t *data, uint16_t len) {
-	if (!wifi_initialized || data == NULL || len == 0)
-		return false;
-
-	// Lock to make sure no other process trying to read the queue while it's adding item to the queue
-	osMutexAcquire(wifi_payload_queue.mutex, osWaitForever);
-
-	if (wifi_payload_queue.count >= WIFI_PAYLOAD_QUEUE_MAX_CAPACITY) {
-		osMutexRelease(wifi_payload_queue.mutex);
-
-		return false;
-	}
-
-	wifi_payload_t *slot = &wifi_payload_queue.buffer[wifi_payload_queue.head];
-
-	if (len > sizeof(slot->payload)) {
-		len = sizeof(slot->payload);
-	}
-
-	slot->id = id;
-
-	slot->len = len;
-
-	slot->message_type = (uint8_t) message_type;
-
-	memset(slot->payload, 0, WIFI_MAX_DATA_LEN);
-
-	memcpy(slot->payload, data, len);
-
-	wifi_payload_queue.head = (wifi_payload_queue.head + 1)
-			% WIFI_PAYLOAD_QUEUE_MAX_CAPACITY;
-
-	wifi_payload_queue.count++;
-
-	osMutexRelease(wifi_payload_queue.mutex);
-
-	// Signal that there is item to consume
-	osSemaphoreRelease(wifi_payload_queue.items);
-
-	return true;
 }
 
 bool WIFI_transmit_data(const char *data, size_t bytes, const uint16_t timeout) {
@@ -373,8 +300,6 @@ static void uart_rx_callback_handler(const uint8_t *data, size_t len) {
 static bool wifi_handle_reset() {
 	wifi_log("Resetting, wait 3 seconds...\r\n");
 
-	reset_queue();
-
 	osDelay(3000);
 
 	// Reset ESP32
@@ -426,7 +351,7 @@ static bool wifi_handle_join_ap() {
 	wifi_log("Joining AP...\r\n");
 
 	wifi_log("Setting mode...\r\n");
- 
+
 	if (!wifi_cmd_expect(ESP_OK, 1000, true, ESP_CMD_SET_MODE, 1))
 		return false;
 
@@ -452,7 +377,7 @@ static bool wifi_handle_join_ap() {
 	// Disable DHCP for station mode
 	if (!wifi_cmd_expect(ESP_OK, 1000, true, ESP_CMD_DHCP_MODE, ESP_DHCP_DISABLED, ESP_MODE_STA))
 		return false;
-	
+
 	osDelay(200);
 
 	// Set static IP for station mode
@@ -498,11 +423,7 @@ static bool wifi_handle_join_ap() {
 }
 
 static bool wifi_handle_connected() {
-//	// Ping the Wifi module to check if it's still ON
-//	if (!wifi_cmd_expect(ESP_OK, 1000, true, ESP_CMD_HEALTH))
-//		return false;
-
-	if (!wifi_process_pending_payload()) {
+	if (!wifi_send_all_can()) {
 		return false;
 	}
 
@@ -603,44 +524,6 @@ bool show_cmd, const char *fmt, ...) {
 	return wifi_wait_for_response(expected, timeout);
 }
 
-static bool wifi_payload_pop(wifi_payload_t *out) {
-	if (out == NULL)
-		return false;
-
-	osMutexAcquire(wifi_payload_queue.mutex, osWaitForever);
-
-	if (wifi_payload_queue.count == 0) {
-		osMutexRelease(wifi_payload_queue.mutex);
-
-		return false;
-	}
-
-	*out = wifi_payload_queue.buffer[wifi_payload_queue.tail];
-	wifi_payload_queue.tail = (wifi_payload_queue.tail + 1)
-			% WIFI_PAYLOAD_QUEUE_MAX_CAPACITY;
-	wifi_payload_queue.count--;
-
-	osMutexRelease(wifi_payload_queue.mutex);
-
-	return true;
-}
-
-static void reset_queue() {
-	osMutexAcquire(wifi_payload_queue.mutex, osWaitForever);
-
-	// Reset the queue
-	wifi_payload_queue.head = 0;
-	wifi_payload_queue.tail = 0;
-	wifi_payload_queue.retries_count = 0;
-	wifi_payload_queue.payload_processing = false;
-
-	// drain semaphore to 0
-	while (osSemaphoreAcquire(wifi_payload_queue.items, 0) == osOK) {
-	}
-
-	osMutexRelease(wifi_payload_queue.mutex);
-}
-
 static bool wifi_send_raw_expect(const char *expected, const uint16_t timeout,
 		bool show, const char *data, size_t len) {
 	if (expected == NULL || data == NULL || len == 0) {
@@ -672,73 +555,6 @@ static bool wifi_send_raw_expect(const char *expected, const uint16_t timeout,
 	}
 
 	return wifi_wait_for_response(expected, timeout);
-}
-
-static bool wifi_process_pending_payload(void) {
-	uint8_t buf[sizeof(wifi_payload_t)];
-
-	while (1) {
-		if (!wifi_payload_queue.payload_processing) {
-			if (osSemaphoreAcquire(wifi_payload_queue.items, osWaitForever)
-					!= osOK) {
-				wifi_log("Failed to wait for payload signal\r\n");
-				return false;
-			}
-
-			if (!wifi_payload_pop(&wifi_payload_queue.pending_payload)) {
-				wifi_log("Payload signal received but queue was empty\r\n");
-				return false;
-			}
-
-			wifi_payload_queue.payload_processing = true;
-			wifi_payload_queue.retries_count = 0;
-		}
-
-		if (wifi_payload_queue.retries_count >= WIFI_PAYLOAD_TRANSMIT_RETRIES) {
-			wifi_payload_queue.payload_processing = false;
-			wifi_log("Failed to send payload. Max retries reached, ignored\r\n");
-
-			return true;
-		}
-
-		// Put payload into buffer
-		buf[0] = wifi_payload_queue.pending_payload.message_type;
-
-		buf[1] = (wifi_payload_queue.pending_payload.id >> 24) & 0xFF;
-		buf[2] = (wifi_payload_queue.pending_payload.id >> 16) & 0xFF;
-		buf[3] = (wifi_payload_queue.pending_payload.id >> 8) & 0xFF;
-		buf[4] = wifi_payload_queue.pending_payload.id & 0xFF;
-
-		buf[5] = wifi_payload_queue.pending_payload.len;
-
-		// Clear the rest of the buffer to ensure no leftover data is sent
-		memset(&buf[6], 0, sizeof(buf) - 6);
-
-		// Copy the payload data into the buffer
-		memcpy(&buf[6], wifi_payload_queue.pending_payload.payload, wifi_payload_queue.pending_payload.len);
-
-		if (!WIFI_transmit_data(
-				(const char*) buf,
-				wifi_payload_queue.pending_payload.len + 6, 3000)) {
-			wifi_log("Failed to send. Try again...\r\n");
-			wifi_payload_queue.retries_count++;
-			return true;
-		}
-
-		wifi_log("Send data ok\r\n");
-		wifi_payload_queue.payload_processing = false;
-		wifi_payload_queue.retries_count = 0;
-
-		if (osSemaphoreAcquire(wifi_payload_queue.items, 0) != osOK) {
-			return true;
-		}
-
-		if (!wifi_payload_pop(&wifi_payload_queue.pending_payload)) {
-			return true;
-		}
-
-		wifi_payload_queue.payload_processing = true;
-	}
 }
 
 static void wifi_clear_rx_semaphore(void) {
@@ -801,4 +617,52 @@ static bool wifi_wait_for_response(const char *expected, uint16_t timeout) {
 	size_t expected_len = strlen(expected);
 
 	return (rx_len == expected_len) && (memcmp(rx, expected, expected_len) == 0);
+}
+
+static bool wifi_send_all_can() {
+	can_storage_t *can_storage = get_can_storage();
+	uint8_t buf[sizeof(wifi_payload_t)];
+
+	// Acquire the mutex to ensure exclusive access to the CAN storage
+	if (osMutexAcquire(can_storage->mutex, osWaitForever) != osOK) {
+		wifi_log("Failed to acquire CAN storage mutex\r\n");
+		return false;
+	}
+
+	for (uint16_t i = 0; i < TABLE_SIZE; i++) {
+		can_msg_node_t *node = &can_storage->nodes[i];
+
+		if (node->valid) {
+			// Prepare the payload
+			buf[0] = 0; // Wifi is 0
+
+			buf[4] = (node->key >> 24) & 0xFF;
+			buf[3] = (node->key >> 16) & 0xFF;
+			buf[2] = (node->key >> 8) & 0xFF;
+			buf[1] = node->key & 0xFF;
+
+			buf[5] = node->value.len;
+
+			// Clear the rest of the buffer to ensure no leftover data is sent
+			memset(&buf[6], 0, sizeof(buf) - 6);
+
+			// Copy the payload data into the buffer
+			memcpy(&buf[6], node->value.payload, node->value.len);
+
+			// Send the payload over WiFi
+			if (!WIFI_transmit_data((const char*) buf, node->value.len + 6, 3000)) {
+				wifi_log("Failed to send CAN message over WiFi. Ignore...\r\n");
+				osMutexRelease(can_storage->mutex);
+
+				return true;
+			}
+
+			// Mark the node as invalid after sending
+			node->valid = false;
+		}
+	}
+
+	osMutexRelease(can_storage->mutex);
+
+	return true;
 }

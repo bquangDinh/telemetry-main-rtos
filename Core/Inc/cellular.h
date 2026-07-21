@@ -73,12 +73,6 @@
 #define CELLULAR_MAX_DATA_LEN 64
 
 /**
- * @brief The maximum number of payloads that can be queued for transmission to the NoteCard
- * This should be set according to the expected data throughput and memory constraints of your application.
- */
-#define CELLULAR_PAYLOAD_QUEUE_MAX_CAPACITY 20
-
-/**
  * @brief Enable or disable cellular logging.
  */
 #define CELLULAR_LOG_ENABLED 1
@@ -111,16 +105,6 @@ typedef struct {
  * @param blues_uart_interface Pointer to the UART handle for the Blue Note Card.
  */
 void CELLULAR_Task_Init(UART_HandleTypeDef* blues_uart_interface);
-
-/**
- * @brief Adds a payload to the cellular transmission queue.
- * This function takes an ID, a pointer to the data, and the length of the data, and adds it to the queue for later transmission to the NoteCard. The function returns true if the payload was successfully added to the queue, or false if there was an error (e.g., queue full).
- * @param id Unique identifier for the payload.
- * @param data Pointer to the data buffer containing the payload.
- * @param len Length of the data in bytes.
- * @return true if successful, false otherwise.
- */
-bool CELLULAR_add_payload_to_queue(const uint32_t id, const uint8_t* data, uint16_t len);
 
 /**
  * @brief Transmits data to the NoteCard.

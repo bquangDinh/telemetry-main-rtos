@@ -15,6 +15,7 @@
 #include "wifi.h"
 #include "cellular.h"
 #include "sd_card.h"
+#include "can_storage.h"
 
 /**
  * @brief Size of the log buffer for CAN messages
@@ -418,22 +419,31 @@ static void handle_rx_can_message(uint32_t can_id, const uint8_t *data,
 
 	can_log_raw(msg);
 
-	bool should_send = should_send_message(can_id, data, len);
+	// bool should_send = should_send_message(can_id, data, len);
 
-	if (!should_send) {
-		can_logln(
-				"Message is not dirty and has been sent recently, skipping...");
-		return;
-	}
+	// if (!should_send) {
+	// 	can_logln(
+	// 			"Message is not dirty and has been sent recently, skipping...");
+	// 	return;
+	// }
 
-	if (CELLULAR_add_payload_to_queue(can_id, data, len)) {
-		can_logln("Added payload to cellular queue");
-	}
+	// Add to the can storage
+	can_payload_t payload;
 
-	if (WIFI_add_payload_to_queue(WIFI_CAN_MESSAGE, can_id, data, len)) {
-		can_logln("Added payload to wifi queue");
-	}
+	payload.len = len;
+	memcpy(payload.payload, data, len);
 
+	insert_can_msg_to_storage(can_id, &payload);
+
+	// if (CELLULAR_add_payload_to_queue(can_id, data, len)) {
+	// 	can_logln("Added payload to cellular queue");
+	// }
+
+	// if (WIFI_add_payload_to_queue(WIFI_CAN_MESSAGE, can_id, data, len)) {
+	// 	can_logln("Added payload to wifi queue");
+	// }
+
+	// Save to SD card
 	if (SDCARD_add_can_message_to_queue(can_id, data, len)) {
 		can_logln("Added CAN message to SD card queue");
 	}
