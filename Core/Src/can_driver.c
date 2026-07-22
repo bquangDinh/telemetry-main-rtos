@@ -85,7 +85,7 @@ static const char* can_mode_to_string(can_mode_t mode);
 /**
  * Logging macros (compile-time switch)
  */
-#if CAN_LOG_ENABLED
+#if CAN_DRIVER_LOG_ENABLED
 #define can_log(msg) ((void) uart_logger_add_msg((msg), 0))
 #define can_logf(fmt, ...) ((void) uart_logger_add_msg_format((fmt), ##__VA_ARGS__))
 #else

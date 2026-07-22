@@ -23,7 +23,7 @@ typedef struct can_storage {
 	osMutexId_t mutex;
 } can_storage_t;
 
-void init_can_storage();
+void CAN_STORAGE_Task_Init();
 
 void insert_can_msg_to_storage(const uint32_t key, can_payload_t* value);
 

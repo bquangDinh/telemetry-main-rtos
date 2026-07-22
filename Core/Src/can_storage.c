@@ -89,7 +89,29 @@ static can_storage_t storage = {
 		{ .key = 0x621	   },
     }
 };
-void init_can_storage() {
+// void init_can_storage() {
+// 	if (storage.mutex == NULL) {
+// 		storage.mutex = osMutexNew(NULL);
+
+// 		if (storage.mutex == NULL) {
+// 			uart_logger_add_msg("[C_STOR] Failed to create mutex for CAN storage\r\n", 0);
+// 		} else {
+// 			uart_logger_add_msg("[C_STOR] Created mutex for CAN storage\r\n", 0);
+// 		}
+// 	}
+// }
+
+static void CAN_STORAGE_Task(void* argument);
+
+static osThreadId_t canStorageTaskHandler;
+
+static const osThreadAttr_t canStorageTaskAttr = {
+	.name = "canStorageTask",
+	.stack_size = 512 * 4,
+	.priority = (osPriority_t) osPriorityNormal
+};
+
+void CAN_STORAGE_Task_Init() {
 	if (storage.mutex == NULL) {
 		storage.mutex = osMutexNew(NULL);
 
@@ -98,6 +120,14 @@ void init_can_storage() {
 		} else {
 			uart_logger_add_msg("[C_STOR] Created mutex for CAN storage\r\n", 0);
 		}
+	}
+
+	canStorageTaskHandler = osThreadNew(CAN_STORAGE_Task, NULL, &canStorageTaskAttr);
+
+	if (canStorageTaskHandler == NULL) {
+		uart_logger_add_msg("[C_STOR] Failed to create CAN storage task\r\n", 0);
+	} else {
+		uart_logger_add_msg("[C_STOR] Created CAN storage task\r\n", 0);
 	}
 }
 
@@ -133,4 +163,10 @@ void insert_can_msg_to_storage(const uint32_t key, can_payload_t* value) {
 
 can_storage_t* get_can_storage() {
 	return &storage;
+}
+
+static void CAN_STORAGE_Task(void* argument) {
+	while (1) {
+		osDelay(1000); // Delay for 1 second
+	}
 }

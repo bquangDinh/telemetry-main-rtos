@@ -32,7 +32,7 @@
 /**
  * @brief Enable or disable logging of CAN messages and events to the UART logger. When enabled, the CAN controller will log detailed information about received messages, transmitted messages, and errors to the UART logger, which can be useful for troubleshooting and development. When disabled, the CAN controller will operate without logging this information, which can help reduce overhead and improve performance in production environments.
  */
-#define CAN_LOG_ENABLED 1
+#define CAN_LOG_ENABLED 0
 
 /**
  * @brief CAN message queue configuration for the CAN controller. This definition specifies the maximum capacity of the queue used to store incoming CAN messages before they are processed by the controller task. The queue will be used to manage the flow of incoming messages and ensure that they are processed in a timely manner, while also preventing overflow and managing memory usage effectively.

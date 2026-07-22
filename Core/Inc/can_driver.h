@@ -21,7 +21,7 @@
 /**
  * @brief Enable or disable logging of CAN operations to the UART logger.
  */
-#define CAN_LOG_ENABLED 1
+#define CAN_DRIVER_LOG_ENABLED 1
 
 /**
  * @brief Structure for representing the state of the CAN driver, including the CAN handle, semaphores for synchronization, message buffers, and error state for LED indication in the controller task.

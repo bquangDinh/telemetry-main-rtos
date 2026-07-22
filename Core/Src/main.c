@@ -29,6 +29,7 @@
 #include "can_controller.h"
 #include "sd_card.h"
 #include "watchdog.h"
+#include "can_storage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -172,6 +173,7 @@ int main(void)
 	CELLULAR_Task_Init(CELLULAR_BLUES_UART);
 	SDCARD_Task_Init(SDCARD_INSTANCE);
 	CAN_CONTROLLER_Task_Init(CAN_CONTROLLER_CAN);
+	CAN_STORAGE_Task_Init();
 	WATCHDOG_Task_Init(&hiwdg1);
   /* USER CODE END RTOS_THREADS */
 
