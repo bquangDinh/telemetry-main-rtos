@@ -131,6 +131,8 @@ static bool cellular_send_bulk_data();
 static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 		const uint16_t timeout, ...);
 
+static bool cellular_send_cmd_and_wait_respond_pre_buf(const char* buf, const uint16_t timeout);
+
 /**
  * @brief Signal the NoteCard to send all pending data immediately
  */
@@ -651,7 +653,7 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 	while (osSemaphoreAcquire(cellular_rx_sem, 0) == osOK) {
 	}
 
-	char buf[BULK_BUFFER_SIZE];
+	char buf[128];
 
 	va_list args;
 	va_start(args, timeout);
@@ -662,6 +664,33 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 		cellular_log("Invalid CMD -- truncated");
 
 		return false;
+	}
+
+	// Send data into the uart interface that connects to blues
+	bool ret = uart_send_data(&blues_uart_driver_state, buf);
+
+	if (!ret) {
+		cellular_log("Failed to send data over UART");
+
+		return false;
+	}
+
+	// wait for response
+	if (osSemaphoreAcquire(cellular_rx_sem, timeout) == osOK) {
+		return true;
+	} else {
+		// Timeout
+		cellular_log("Timeout.");
+
+		return false;
+	}
+
+	return true;
+}
+
+static bool cellular_send_cmd_and_wait_respond_pre_buf(const char* buf, const uint16_t timeout) {
+	/* drain stale signal */
+	while (osSemaphoreAcquire(cellular_rx_sem, 0) == osOK) {
 	}
 
 	// Send data into the uart interface that connects to blues
@@ -763,5 +792,5 @@ static bool cellular_send_bulk_data() {
 
 	osMutexRelease(can_storage->mutex);
 
-	return cellular_send_cmd_and_wait_respond(buffer, 3000);
+	return cellular_send_cmd_and_wait_respond_pre_buf(buffer, 3000);
 }
