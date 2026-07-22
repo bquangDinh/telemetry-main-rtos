@@ -4,7 +4,7 @@
 #include "cmsis_os.h"
 #include <stdbool.h>
 
-#define TABLE_SIZE 86
+#define TABLE_SIZE 88
 #define MAX_VALUE_LENGTH 64
 
 typedef struct can_payload {

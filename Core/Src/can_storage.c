@@ -89,6 +89,8 @@ static can_storage_t storage = {
 		{ .key = 0x621	   },
 		{ .key = 0x4000018 },
 		{ .key = 0x4000118 },
+		{ .key = 0x612	   },
+		{ .key = 0x1E800004},
     }
 };
 // void init_can_storage() {
