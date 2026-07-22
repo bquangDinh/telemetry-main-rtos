@@ -55,7 +55,7 @@
 /**
  * @brief Enable or disable static IP configuration for the WiFi module. When enabled, the WiFi module will use a static IP address instead of obtaining an IP address via DHCP. This can be useful in scenarios where a fixed IP address is required for communication with other devices on the network.
  */
-#define WIFI_ENABLE_STATIC_IP 0
+#define WIFI_ENABLE_STATIC_IP 1
 
 /**
  * @brief Static IP configuration values for the WiFi module. These defines specify the static IP address and gateway to be used when static IP configuration is enabled.
