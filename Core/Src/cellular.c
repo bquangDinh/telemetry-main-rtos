@@ -16,7 +16,7 @@
 #include "uart_driver.h"
 #include "can_storage.h"
 
-#define BULK_BUFFER_SIZE 2048
+#define BULK_BUFFER_SIZE 4096
 
 #define CELL_HEALTH_LED_PIN GPIO_PIN_4
 #define CELL_HEALTH_LED_PORT GPIOD
@@ -651,7 +651,7 @@ static bool cellular_send_cmd_and_wait_respond(const char *fmt,
 	while (osSemaphoreAcquire(cellular_rx_sem, 0) == osOK) {
 	}
 
-	char buf[128];
+	char buf[BULK_BUFFER_SIZE];
 
 	va_list args;
 	va_start(args, timeout);
