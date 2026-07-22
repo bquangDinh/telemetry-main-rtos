@@ -42,9 +42,9 @@
  * @brief WiFi connection configuration values. These defines specify the SSID, password, and server details for connecting to the WiFi network.
  */
 
-#define WIFI_SSID "Olympus"
-#define WIFI_PASSWORD "Giveme5$"
-#define HOST_IP "192.168.86.39"
+#define WIFI_SSID "Rutgers Solar Car"
+#define WIFI_PASSWORD "solarknight"
+#define HOST_IP "192.168.8.206"
 #define HOST_PORT 8080
 
 /**
@@ -55,17 +55,17 @@
 /**
  * @brief Enable or disable static IP configuration for the WiFi module. When enabled, the WiFi module will use a static IP address instead of obtaining an IP address via DHCP. This can be useful in scenarios where a fixed IP address is required for communication with other devices on the network.
  */
-#define WIFI_ENABLE_STATIC_IP 1
+#define WIFI_ENABLE_STATIC_IP 0
 
 /**
  * @brief Static IP configuration values for the WiFi module. These defines specify the static IP address and gateway to be used when static IP configuration is enabled.
  */
-#define WIFI_STATIC_IP "192.168.86.100"
+#define WIFI_STATIC_IP "192.168.8.169"
 
 /**
  * @brief Static gateway configuration value for the WiFi module. This define specifies the gateway to be used when static IP configuration is enabled, which is typically the IP address of the router or access point that provides network connectivity.
  */
-#define WIFI_STATIC_GATEWAY "192.168.86.1"
+#define WIFI_STATIC_GATEWAY "192.168.8.1"
 
 /**
  * @brief Static netmask configuration value for the WiFi module. This define specifies the netmask to be used when static IP configuration is enabled, which is typically set to

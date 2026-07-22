@@ -143,7 +143,7 @@ void insert_can_msg_to_storage(const uint32_t key, can_payload_t* value) {
 	}
 
 	if (index == -1) {
-		uart_logger_add_msg("[C_STOR] Key not found in storage\r\n", 0);
+		uart_logger_add_msg_format("[C_STOR] Key (0x%X) not found in storage\r\n", key);
 		return;
 	}
 
