@@ -55,38 +55,19 @@ void WATCHDOG_Task_Init(IWDG_HandleTypeDef* _watchdog_timer) {
 static void WATCHDOG_Task(void *argument) {
 	uint8_t wifi_ok = 0;
 	uint8_t cellular_ok = 0;
-	
-	uint32_t error_blink_start_time = 0;
 
 	while (1) {
 		wifi_ok = is_wifi_ok();
 
 		cellular_ok = is_cellular_ok();
 
-		// sd_card_ok = is_sd_card_ok();
-
 		if (wifi_ok && cellular_ok) {
 			blink_green_led();
-
-			// Reset timer
-			error_blink_start_time = 0;
-
-			HAL_IWDG_Refresh(watchdog_timer);
 		} else {
 			blink_red_led();
-
-			// Start the timer
-			if (error_blink_start_time == 0) {
-				error_blink_start_time = osKernelGetTickCount();
-			} else {
-				// Check if the error blink duration has elapsed
-				if ((osKernelGetTickCount() - error_blink_start_time)
-						< ERROR_BLINK_DURATION_MS) {
-					// Keep refreshing the watchdog timer to prevent reset
-					HAL_IWDG_Refresh(watchdog_timer);
-				}
-			}
 		}
+
+		HAL_IWDG_Refresh(watchdog_timer);
 
 		osDelay(100);
 	}
