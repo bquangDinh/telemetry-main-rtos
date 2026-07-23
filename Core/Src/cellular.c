@@ -791,6 +791,11 @@ static bool cellular_send_bulk_data(void)
 
 		inspected_count++;
 
+		if (index >= TABLE_SIZE) {
+			cellular_log_fmt("Invalid CAN storage index: %u", index);
+			continue;
+		}
+
 		can_msg_node_t *node = &can_storage->nodes[index];
 
 		cellular_log_fmt("Inspecting CAN entry at index %u: ID=%lu, valid=%s",
@@ -849,14 +854,6 @@ static bool cellular_send_bulk_data(void)
 
 		size_t remaining = sizeof(buffer) - offset;
 
-		cellular_log_fmt("Remaining buffer size: %zu, required for this entry: %zu", remaining, required);
-
-		if (remaining < required) {
-			cellular_log("Not enough space in buffer for this entry");
-			osMutexRelease(can_storage->mutex);
-			return false;
-		}
-
 		written = snprintf(
 				&buffer[offset],
 				remaining,
@@ -877,6 +874,12 @@ static bool cellular_send_bulk_data(void)
 		 */
 		static const char hex[] = "0123456789ABCDEF";
 
+		if (payload_len >= 64) {
+			cellular_log("Payload length exceeds maximum allowed size");
+			osMutexRelease(can_storage->mutex);
+			return false;
+		}
+
 		for (size_t j = 0U; j < payload_len; j++) {
 			uint8_t value = node->value.payload[j];
 
@@ -887,14 +890,6 @@ static bool cellular_send_bulk_data(void)
 		buffer[offset] = '\0';
 
 		remaining = sizeof(buffer) - offset;
-
-		cellular_log_fmt("Remaining now is %zu", remaining);
-
-		if (remaining < entry_tail_max + json_end_size + 1U) {
-			cellular_log("Not enough space in buffer for entry tail and JSON end");
-			osMutexRelease(can_storage->mutex);
-			return false;
-		}
 
 		written = snprintf(
 				&buffer[offset],
