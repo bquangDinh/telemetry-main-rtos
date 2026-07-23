@@ -16,7 +16,9 @@
 #include "uart_driver.h"
 #include "can_storage.h"
 
-#define BULK_BUFFER_SIZE 4096
+#define BULK_BUFFER_SIZE 2048
+
+#define BULK_MAX_MESSAGES 10
 
 #define CELL_HEALTH_LED_PIN GPIO_PIN_4
 #define CELL_HEALTH_LED_PORT GPIOD
@@ -101,6 +103,8 @@ static CellularState_t cellular_state = CELLULAR_STATE_WAIT_READY;
 static bool acquired_hub_connection_status = false;
 
 static volatile uint8_t current_retry_count = 0;
+
+static uint16_t next_scan_index = 0;
 
 static uint32_t last_sync_time_ms = 0;
 
@@ -730,67 +734,205 @@ static bool cellular_force_sync_with_note_card() {
 	return true;
 }
 
-static bool cellular_send_bulk_data() {
+static bool cellular_send_bulk_data(void)
+{
 	can_storage_t *can_storage = get_can_storage();
 
 	static char buffer[BULK_BUFFER_SIZE];
+
+	/*
+	 * Remember which table entries were included so they can be restored
+	 * if the Notecard command fails.
+	 */
+	uint16_t selected_indices[BULK_MAX_MESSAGES];
+	uint16_t selected_count = 0U;
+	uint16_t inspected_count = 0U;
+
+	int offset = 0;
+	int written;
 
 	if (osMutexAcquire(can_storage->mutex, osWaitForever) != osOK) {
 		cellular_log("Failed to acquire CAN storage mutex");
 		return false;
 	}
 
-	int offset = 0;
+	memset(buffer, 0, sizeof(buffer));
 
-	memset(buffer, 0, BULK_BUFFER_SIZE);
+	/* Start JSON */
+	written = snprintf(
+			&buffer[offset],
+			sizeof(buffer) - (size_t)offset,
+			"{\"req\":\"note.add\","
+			"\"file\":\"data.qo\","
+			"\"body\":{\"messages\":[");
 
-	// Start JSON
-	offset +=
-			snprintf(&buffer[offset], sizeof(buffer) - offset,
-					"{\"req\":\"note.add\",\"file\":\"data.qo\",\"body\":{[");
-
-	if (offset < 0 || offset >= (int) sizeof(buffer)) {
-		cellular_log("Failed to build Note JSON: Buffer overflow at JSON start");
-		return false;
-	}
-
-	// Build JSON body
-	// Format: { "id": <id>, "payload": "<hex string>", "len": <len> }, ...
-	for (uint16_t i = 0; i < TABLE_SIZE; i++) {
-		can_msg_node_t *node = &can_storage->nodes[i];
-
-		if (node->valid) {
-			offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
-					"{\"id\":%lu,\"payload\":\"",
-					(unsigned long) node->key);
-
-			for (size_t j = 0; j < node->value.len; j++) {
-				offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
-						"%02X", node->value.payload[j]);
-			}
-
-			offset += snprintf(&buffer[offset], sizeof(buffer) - offset,
-					"\",\"len\":%lu},",
-					(unsigned long) node->value.len);
-
-			if (offset >= (int) sizeof(buffer)) {
-				cellular_log("Buffer overflow while building bulk data payload");
-				osMutexRelease(can_storage->mutex);
-				return false;
-			}
-		}
-	}
-
-	// End JSON
-	offset += snprintf(&buffer[offset], sizeof(buffer) - offset, "]}\r\n");
-
-	if (offset < 0 || offset >= (int) sizeof(buffer)) {
-		cellular_log("Failed to build Note JSON: Buffer overflow at JSON end");
+	if (written < 0 ||
+			(size_t)written >= sizeof(buffer) - (size_t)offset) {
+		cellular_log("Buffer overflow at JSON start");
 		osMutexRelease(can_storage->mutex);
 		return false;
 	}
 
+	offset += written;
+
+	/*
+	 * Round-robin scan:
+	 *
+	 * - Start from next_scan_index.
+	 * - Select at most BULK_MAX_MESSAGES valid entries.
+	 * - Inspect at most TABLE_SIZE entries.
+	 * - Continue the next call from where this call stopped.
+	 */
+	while (inspected_count < TABLE_SIZE &&
+			selected_count < BULK_MAX_MESSAGES) {
+
+		uint16_t index = next_scan_index;
+		can_msg_node_t *node = &can_storage->nodes[index];
+
+		next_scan_index =
+				(uint16_t)((next_scan_index + 1U) % TABLE_SIZE);
+
+		inspected_count++;
+
+		if (!node->valid) {
+			continue;
+		}
+
+		/* Add comma before every entry except the first. */
+		if (selected_count > 0U) {
+			written = snprintf(
+					&buffer[offset],
+					sizeof(buffer) - (size_t)offset,
+					",");
+
+			if (written < 0 ||
+					(size_t)written >=
+							sizeof(buffer) - (size_t)offset) {
+				cellular_log("Buffer overflow while adding separator");
+				goto build_failed;
+			}
+
+			offset += written;
+		}
+
+		written = snprintf(
+				&buffer[offset],
+				sizeof(buffer) - (size_t)offset,
+				"{\"id\":%lu,\"payload\":\"",
+				(unsigned long)node->key);
+
+		if (written < 0 ||
+				(size_t)written >=
+						sizeof(buffer) - (size_t)offset) {
+			cellular_log("Buffer overflow while adding CAN ID");
+			goto build_failed;
+		}
+
+		offset += written;
+
+		for (size_t j = 0U; j < node->value.len; j++) {
+			written = snprintf(
+					&buffer[offset],
+					sizeof(buffer) - (size_t)offset,
+					"%02X",
+					(unsigned int)node->value.payload[j]);
+
+			if (written < 0 ||
+					(size_t)written >=
+							sizeof(buffer) - (size_t)offset) {
+				cellular_log("Buffer overflow while adding CAN payload");
+				goto build_failed;
+			}
+
+			offset += written;
+		}
+
+		written = snprintf(
+				&buffer[offset],
+				sizeof(buffer) - (size_t)offset,
+				"\",\"len\":%u}",
+				(unsigned int)node->value.len);
+
+		if (written < 0 ||
+				(size_t)written >=
+						sizeof(buffer) - (size_t)offset) {
+			cellular_log("Buffer overflow while finishing CAN entry");
+			goto build_failed;
+		}
+
+		offset += written;
+
+		selected_indices[selected_count] = index;
+		selected_count++;
+
+		/*
+		 * Clear while holding the mutex.
+		 *
+		 * If this CAN ID is updated after the mutex is released,
+		 * the CAN-writing task will set valid=true again.
+		 */
+		node->valid = false;
+	}
+
+	/* Nothing is waiting to be sent. */
+	if (selected_count == 0U) {
+		osMutexRelease(can_storage->mutex);
+		return true;
+	}
+
+	/* End JSON */
+	written = snprintf(
+			&buffer[offset],
+			sizeof(buffer) - (size_t)offset,
+			"]}}\r\n");
+
+	if (written < 0 ||
+			(size_t)written >= sizeof(buffer) - (size_t)offset) {
+		cellular_log("Buffer overflow at JSON end");
+		goto build_failed;
+	}
+
+	offset += written;
+
 	osMutexRelease(can_storage->mutex);
 
-	return cellular_send_cmd_and_wait_respond_pre_buf(buffer, 3000);
+	/*
+	 * Do not hold the storage mutex while waiting for the Notecard.
+	 * CAN messages can continue updating the table during this call.
+	 */
+	if (cellular_send_cmd_and_wait_respond_pre_buf(buffer, 3000)) {
+		return true;
+	}
+
+	cellular_log("Failed to send bulk CAN data");
+
+	/*
+	 * The send failed, so restore the selected entries as pending.
+	 *
+	 * Setting valid=true is also safe when an entry received a newer
+	 * update while the command was being transmitted.
+	 */
+	if (osMutexAcquire(can_storage->mutex, osWaitForever) == osOK) {
+		for (uint16_t i = 0U; i < selected_count; i++) {
+			can_storage->nodes[selected_indices[i]].valid = true;
+		}
+
+		osMutexRelease(can_storage->mutex);
+	} else {
+		cellular_log("Failed to restore unsent CAN entries");
+	}
+
+	return false;
+
+build_failed:
+	/*
+	 * Restore entries that were marked invalid while constructing
+	 * the JSON because no command will be transmitted.
+	 */
+	for (uint16_t i = 0U; i < selected_count; i++) {
+		can_storage->nodes[selected_indices[i]].valid = true;
+	}
+
+	osMutexRelease(can_storage->mutex);
+	return false;
 }
