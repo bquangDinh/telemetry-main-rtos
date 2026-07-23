@@ -88,7 +88,7 @@ static osSemaphoreId_t wifi_rx_sem;
 static osSemaphoreId_t wifi_disabled_sem;
 
 static const osThreadAttr_t wifiTaskAttr = { .name = "wifiTask", .stack_size =
-		512 * 4, .priority = (osPriority_t) osPriorityRealtime };
+		256 * 4, .priority = (osPriority_t) osPriorityRealtime };
 
 static uart_driver_state_t esp32_uart_driver_state = { 0 };
 

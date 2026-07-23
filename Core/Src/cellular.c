@@ -92,7 +92,7 @@ static osSemaphoreId_t cellular_attn_sem;
 static osSemaphoreId_t cellular_disabled_sem;
 
 static const osThreadAttr_t cellularTaskAttr = { .name = "cellularTask",
-		.stack_size = 256 * 4, .priority = (osPriority_t) osPriorityRealtime1 };
+		.stack_size = 512 * 4, .priority = (osPriority_t) osPriorityRealtime1 };
 
 static uart_driver_state_t blues_uart_driver_state = { 0 };
 
