@@ -21,7 +21,7 @@
 /**
  * @brief Maximum length of a line received via UART
  */
-#define RX_LINE_MAX_LEN 128
+#define RX_LINE_MAX_LEN 512
 
 /**
  * @brief Maximum length of data that can be sent via UART

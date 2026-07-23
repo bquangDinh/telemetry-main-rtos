@@ -94,7 +94,7 @@ static osSemaphoreId_t cellular_attn_sem;
 static osSemaphoreId_t cellular_disabled_sem;
 
 static const osThreadAttr_t cellularTaskAttr = { .name = "cellularTask",
-		.stack_size = 512 * 4, .priority = (osPriority_t) osPriorityRealtime1 };
+		.stack_size = 1024 * 4, .priority = (osPriority_t) osPriorityRealtime1 };
 
 static uart_driver_state_t blues_uart_driver_state = { 0 };
 
@@ -736,9 +736,18 @@ static bool cellular_force_sync_with_note_card() {
 
 static bool cellular_send_bulk_data(void)
 {
+	cellular_log("Entering send bulk data");
+
 	can_storage_t *can_storage = get_can_storage();
 
+	if (can_storage == NULL) {
+		cellular_log("CAN storage is not initialized");
+		return false;
+	}
+
 	static char buffer[BULK_BUFFER_SIZE];
+
+	cellular_log("Enough bytes for buffer");
 
 	/*
 	 * Remember which table entries were included so they can be restored
@@ -758,6 +767,8 @@ static bool cellular_send_bulk_data(void)
 
 	memset(buffer, 0, sizeof(buffer));
 
+	cellular_log("Building start json");
+
 	/* Start JSON */
 	written = snprintf(
 			&buffer[offset],
@@ -765,6 +776,8 @@ static bool cellular_send_bulk_data(void)
 			"{\"req\":\"note.add\","
 			"\"file\":\"data.qo\","
 			"\"body\":{\"messages\":[");
+
+	cellular_log("Built start json");
 
 	if (written < 0 ||
 			(size_t)written >= sizeof(buffer) - (size_t)offset) {
@@ -874,11 +887,15 @@ static bool cellular_send_bulk_data(void)
 		node->valid = false;
 	}
 
+	cellular_log("Built JSON body with %u messages", selected_count);
+
 	/* Nothing is waiting to be sent. */
 	if (selected_count == 0U) {
 		osMutexRelease(can_storage->mutex);
 		return true;
 	}
+
+	cellular_log("Built ending json");
 
 	/* End JSON */
 	written = snprintf(
@@ -895,6 +912,8 @@ static bool cellular_send_bulk_data(void)
 	offset += written;
 
 	osMutexRelease(can_storage->mutex);
+
+	cellular_log("Built ending json");
 
 	/*
 	 * Do not hold the storage mutex while waiting for the Notecard.
