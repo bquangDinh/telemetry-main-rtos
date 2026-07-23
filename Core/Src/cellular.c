@@ -63,6 +63,10 @@
 
 #define CELLULAR_WAIT_READY_TIMEOUT_MS 10000U
 
+#define CELLULAR_HUB_INFO_TIMEOUT_MS 5000U
+
+#define CELLULAR_DISABLED_POLL_MS 100U
+
 typedef enum {
 	ERR_NONE,
 	ERR_WAIT_READY,
@@ -568,7 +572,7 @@ static bool cellular_handle_hub_connected() {
 		cellular_log("Acquiring hub info from NoteCard...");
 
 		if (!cellular_send_cmd_and_wait_respond(
-		CELLULAR_ACQUIRE_HUB_INFO, 1000)) {
+		CELLULAR_ACQUIRE_HUB_INFO, CELLULAR_HUB_INFO_TIMEOUT_MS)) {
 			return false;
 		}
 
@@ -614,11 +618,11 @@ static bool cellular_handle_transmit() {
  * @brief Park the cellular module until it is explicitly re-enabled.
  */
 static bool cellular_handle_disable() {
-	if (osSemaphoreAcquire(cellular_disabled_sem, osWaitForever) != osOK) {
-		return false;
+	if (osSemaphoreAcquire(cellular_disabled_sem, CELLULAR_DISABLED_POLL_MS)
+			== osOK) {
+		cellular_log("Cellular module re-enabled");
+		cellular_state = CELLULAR_STATE_WAIT_READY;
 	}
-
-	cellular_state = CELLULAR_STATE_WAIT_READY;
 
 	return true;
 }
@@ -736,8 +740,6 @@ static bool cellular_force_sync_with_note_card() {
 
 static bool cellular_send_bulk_data(void)
 {
-	cellular_log("Entering send bulk data");
-
 	can_storage_t *can_storage = get_can_storage();
 
 	if (can_storage == NULL || can_storage->mutex == NULL) {
@@ -802,19 +804,41 @@ static bool cellular_send_bulk_data(void)
 		size_t payload_len = node->value.len;
 
 		if (payload_len > sizeof(node->value.payload)) {
-			cellular_log("Invalid CAN payload length");
-			osMutexRelease(can_storage->mutex);
-			return false;
+			/*
+			 * Quarantine a corrupted entry to avoid repeated hard-fail loops.
+			 */
+			node->valid = false;
+			cellular_log("Invalid CAN payload length. Dropping CAN entry");
+			continue;
+		}
+
+		/*
+		 * Ensure one full entry (plus closing JSON) fits before writing any
+		 * part of it, so we never leave a partial/trailing-comma payload.
+		 */
+		const size_t comma_size = (selected_count > 0U) ? 1U : 0U;
+		const size_t entry_prefix_max =
+				sizeof("{\"id\":4294967295,\"payload\":\"") - 1U;
+		const size_t entry_tail_max = sizeof("\",\"len\":255}") - 1U;
+		const size_t json_end_size = sizeof("]}}\r\n") - 1U;
+		const size_t required =
+				comma_size +
+				entry_prefix_max +
+				(payload_len * 2U) +
+				entry_tail_max +
+				json_end_size +
+				1U; /* Null terminator */
+
+		if (required > (sizeof(buffer) - offset)) {
+			/*
+			 * Buffer is full for this cycle. Send already-packed entries and keep
+			 * this one pending for the next cycle.
+			 */
+			break;
 		}
 
 		/* Comma between entries, but not after the final entry. */
 		if (selected_count > 0U) {
-			if (offset + 1U >= sizeof(buffer)) {
-				cellular_log("Buffer overflow while adding separator");
-				osMutexRelease(can_storage->mutex);
-				return false;
-			}
-
 			buffer[offset++] = ',';
 			buffer[offset] = '\0';
 		}
@@ -834,24 +858,6 @@ static bool cellular_send_bulk_data(void)
 		}
 
 		offset += (size_t)written;
-
-		/*
-		 * Each payload byte requires exactly two hexadecimal characters.
-		 * Reserve enough space for the payload plus the remaining JSON.
-		 */
-		const size_t entry_tail_max = sizeof("\",\"len\":64}") - 1U;
-		const size_t json_end_size = sizeof("]}}\r\n") - 1U;
-		const size_t required =
-				(payload_len * 2U) +
-				entry_tail_max +
-				json_end_size +
-				1U; /* Null terminator */
-
-		if (required > sizeof(buffer) - offset) {
-			cellular_log("Buffer overflow before adding CAN payload");
-			osMutexRelease(can_storage->mutex);
-			return false;
-		}
 
 		/*
 		 * Write hexadecimal directly rather than calling snprintf()
@@ -915,8 +921,6 @@ static bool cellular_send_bulk_data(void)
 	offset += (size_t)written;
 
 	osMutexRelease(can_storage->mutex);
-
-	cellular_log("Sending bulk JSON");
 
 	return cellular_send_cmd_and_wait_respond_pre_buf(buffer, 3000);
 }
